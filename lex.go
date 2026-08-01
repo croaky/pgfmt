@@ -245,6 +245,23 @@ func lex(src string) ([]token, error) {
 			i = j
 			continue
 		}
+		// Dollar-quoted string: $$body$$ or $tag$body$tag$. The body is
+		// another language -- a PL/pgSQL function, usually -- so it is one
+		// opaque token, kept byte for byte. Formatting inside it would mean
+		// knowing that language, and reindenting it would change a string.
+		if ch == '$' {
+			if tag, ok := dollarTag(src, i); ok {
+				end := strings.Index(src[i+len(tag):], tag)
+				if end < 0 {
+					return nil, fmt.Errorf("pgfmt: unterminated %s string at offset %d", tag, i)
+				}
+				j := i + len(tag) + end + len(tag)
+				toks = append(toks, token{kind: tkString, val: src[i:j], blanksBefore: blanks})
+				blanks = 0
+				i = j
+				continue
+			}
+		}
 		// Parameter: $N.
 		if ch == '$' && i+1 < n && isDigit(src[i+1]) {
 			j := i + 1
@@ -299,6 +316,23 @@ func isIdentStart(ch byte) bool {
 }
 
 func isIdentCont(ch byte) bool { return isIdentStart(ch) || isDigit(ch) }
+
+// dollarTag returns the opening delimiter of a dollar-quoted string at i,
+// including both dollar signs. A tag is $$ or $ident$; $1 is a parameter and
+// $ alone is neither.
+func dollarTag(src string, i int) (string, bool) {
+	if i+1 < len(src) && isDigit(src[i+1]) {
+		return "", false
+	}
+	j := i + 1
+	for j < len(src) && isIdentCont(src[j]) {
+		j++
+	}
+	if j >= len(src) || src[j] != '$' {
+		return "", false
+	}
+	return src[i : j+1], true
+}
 
 func matchOp(src string, i int) (string, bool) {
 	for _, op := range operators {

@@ -472,6 +472,32 @@ func TestFormat(t *testing.T) {
 				"ALTER INDEX bld_tag_search_search_vector RENAME TO index_tag_search_on_search_vector;\n",
 		},
 		{
+			// The body is another language, so it survives byte for byte.
+			name: "dollar-quoted function body passes through",
+			in: "" +
+				"create function f() returns trigger as $$\n" +
+				"begin\n" +
+				"  return new;\n" +
+				"end;\n" +
+				"$$ language plpgsql;",
+			want: "" +
+				"CREATE function f() returns trigger AS $$\n" +
+				"begin\n" +
+				"  return new;\n" +
+				"end;\n" +
+				"$$ language plpgsql;\n",
+		},
+		{
+			name: "tagged dollar quote holds a nested $$",
+			in:   "select $body$ a $$ b $body$;",
+			want: "SELECT\n  $body$ a $$ b $body$;\n",
+		},
+		{
+			name: "unterminated dollar quote is an error",
+			in:   "select $$ oops;",
+			want: "",
+		},
+		{
 			name: "unterminated string is an error",
 			in:   "select 'oops from t;",
 			want: "",
