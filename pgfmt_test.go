@@ -1,6 +1,10 @@
 package pgfmt
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/croaky/is"
+)
 
 // TestFormat covers each rule of the locked style with input → output.
 func TestFormat(t *testing.T) {
@@ -645,14 +649,14 @@ func TestFormat(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := newAssert(t)
+			is := is.New(t)
 			got, err := Format(tt.in)
 			if tt.want == "" {
-				a.OK(err != nil)
+				is.HasErr(err)
 				return
 			}
-			a.OK(err == nil)
-			a.OK(got == tt.want)
+			is.NoErr(err)
+			is.Eq(got, tt.want)
 		})
 	}
 }

@@ -33,8 +33,9 @@ git ls-files -z '*.go' | xargs -0 gopls check -severity=hint
 The local `goimports` writes; the `lint` job only reports, because a CI
 job that rewrites source has nowhere to put it.
 
-Nothing outside the standard library is imported, tests included.
-Taking a dependency is a design decision, not a step.
+The package imports nothing outside the standard library. The only
+dependency is `github.com/croaky/is`, used for test assertions. Taking
+another is a design decision, not a step.
 
 ## Tests
 
@@ -42,6 +43,10 @@ Red/green TDD. `pgfmt_test.go` is a table of input and output, one entry
 per rule of the style. A layout change is a new entry, and an entry that
 changes is a style change: two repos have their SQL formatted by this,
 so the diff lands there.
+
+Assertions come from `github.com/croaky/is`: `is := is.New(t)`, then
+`is.Eq(got, want)`, `is.NoErr(err)`, `is.HasErr(err)`. Pick the helper
+that names the check; `is.True` is for a predicate with no want.
 
 ## Commits
 
