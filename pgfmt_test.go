@@ -395,6 +395,17 @@ func TestFormat(t *testing.T) {
 				"  args ? 'owner_id';\n",
 		},
 		{
+			name: "array overlap operator is recognized",
+			in:   "select id from pos where pos.statuses && $1::text[];",
+			want: "" +
+				"SELECT\n" +
+				"  id\n" +
+				"FROM\n" +
+				"  pos\n" +
+				"WHERE\n" +
+				"  pos.statuses && $1::text[];\n",
+		},
+		{
 			name: "window and array keywords are uppercased",
 			in: "select row_number() over(partition by jobs.args ->> 'owner_id' order by jobs.created_at asc, jobs.id asc) as row_num " +
 				"from jobs where jobs.status = any (array['pending', 'started']);",

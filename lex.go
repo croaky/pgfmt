@@ -118,7 +118,7 @@ func upcaseDDLKeywords(toks []token) {
 // operators ordered by length (longest first) for correct longest-match.
 var operators = []string{
 	"->>", "!~*",
-	"=>", "<>", "<=", ">=", "!=", "->", "~*", "!~", "::", "||", "@>", "<@",
+	"=>", "<>", "<=", ">=", "!=", "->", "~*", "!~", "::", "||", "&&", "@>", "<@",
 	"<", ">", "=", "+", "-", "*", "/", "%", ".", "~", "?",
 }
 
