@@ -52,3 +52,13 @@ onto a line, and a line comment would swallow what followed.
 input's, ignoring comments. A mismatch is an error rather than a written
 file, so a bug in the printer costs a failed check and not a query that
 means something else.
+
+## GitHub repo is a mirror
+
+Development happens on [cibot](https://dancroak.com/cmd/cibot/), a
+self-hosted review and CI server, which holds in progress branches.
+GitHub receives `main` and the tags so `go get` works.
+
+## License
+
+MIT
