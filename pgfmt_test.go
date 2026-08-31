@@ -257,6 +257,38 @@ func TestFormat(t *testing.T) {
 				"  t;\n",
 		},
 		{
+			// The keyword sits between AS and the subquery, so a reader
+			// learns from the CTE line that this one is read once.
+			name: "WITH AS MATERIALIZED keeps CTE structure",
+			in:   "with t as materialized (select 1), u as (select 2) select * from t;",
+			want: "" +
+				"WITH t AS MATERIALIZED (\n" +
+				"  SELECT\n" +
+				"    1\n" +
+				"),\n" +
+				"u AS (\n" +
+				"  SELECT\n" +
+				"    2\n" +
+				")\n" +
+				"SELECT\n" +
+				"  *\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
+			name: "WITH AS NOT MATERIALIZED keeps CTE structure",
+			in:   "with t as not materialized (select 1) select * from t;",
+			want: "" +
+				"WITH t AS NOT MATERIALIZED (\n" +
+				"  SELECT\n" +
+				"    1\n" +
+				")\n" +
+				"SELECT\n" +
+				"  *\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
 			name: "WITH CTE column list formats subquery body",
 			in:   "with recent(item_id) as (select item_id from notes where occurred_on >= now() - '1 year'::interval union select item_id from tracking where created_at >= now() - '1 year'::interval union select item_id from sessions where stopped_at >= now() - '1 year'::interval or stopped_at is null) insert into items (item_id, list_id) select records.id, $1 from records left join recent on recent.item_id = records.id where records.region is not null and not (records.region = any ($2::text[])) and recent.item_id is null on conflict do nothing;",
 			want: "" +

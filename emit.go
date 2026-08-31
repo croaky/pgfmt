@@ -1006,7 +1006,7 @@ func emitValues(b *bytes.Buffer, c clause, base int) {
 	writeTerminator(b, c.trailer)
 }
 
-// emitWith handles WITH [RECURSIVE] name AS (subquery)
+// emitWith handles WITH [RECURSIVE] name AS [[NOT] MATERIALIZED] (subquery)
 // [, name2 AS (subquery)] <body>.
 func emitWith(b *bytes.Buffer, c clause, base int) {
 	writeIndent(b, base)
@@ -1043,14 +1043,23 @@ func emitWith(b *bytes.Buffer, c clause, base int) {
 			body = body[1:]
 		}
 
-		if len(body) < 2 || !body[0].isKW("AS") || body[1].grp == nil {
+		if len(body) < 2 || !body[0].isKW("AS") {
 			break
 		}
-		b.WriteString(" AS (\n")
-		pStmt(b, body[1].grp.items, base+2)
+		// A materialization modifier sits between AS and the subquery. It
+		// stays on the CTE line, where it reads as a property of this CTE
+		// rather than of the statement inside it.
+		modifier, rest := materializedModifier(body[1:])
+		if len(rest) == 0 || rest[0].grp == nil {
+			break
+		}
+		b.WriteString(" AS")
+		b.WriteString(modifier)
+		b.WriteString(" (\n")
+		pStmt(b, rest[0].grp.items, base+2)
 		writeIndent(b, base)
 		b.WriteByte(')')
-		body = body[2:]
+		body = rest[1:]
 		if len(body) > 0 && body[0].isTok(",") {
 			body = body[1:]
 			b.WriteString(",\n")
@@ -1069,6 +1078,19 @@ func emitWith(b *bytes.Buffer, c clause, base int) {
 
 func isRecursiveModifier(it item) bool {
 	return it.tok != nil && strings.EqualFold(it.tok.val, "recursive")
+}
+
+// materializedModifier reads a CTE's MATERIALIZED or NOT MATERIALIZED
+// modifier off the front of items. It returns the text to print after AS,
+// empty when there is no modifier, and the items that follow it.
+func materializedModifier(items []item) (string, []item) {
+	switch {
+	case len(items) > 0 && items[0].isKW("MATERIALIZED"):
+		return " MATERIALIZED", items[1:]
+	case len(items) > 1 && items[0].isKW("NOT") && items[1].isKW("MATERIALIZED"):
+		return " NOT MATERIALIZED", items[2:]
+	}
+	return "", items
 }
 
 // ----------------------------------------------------------------------
