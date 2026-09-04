@@ -5,7 +5,8 @@
 //	pgfmt -c file.sql ...       Check formatting; exit 1 if any file would
 //	                            change. Writes nothing.
 //	pgfmt -w file.sql ...       Format named files, writing in place.
-//	pgfmt file.sql ...          Format named files to stdout.
+//	pgfmt file.sql ...          Format named files to stdout. A file
+//	                            already in the style prints nothing.
 //	pgfmt < input.sql           Format stdin to stdout.
 //
 // -c reports only true formatting violations, never your edits, so a clean

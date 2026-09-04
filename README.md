@@ -13,7 +13,8 @@ go tool pgfmt < file.sql        # format stdin to stdout
 ```
 
 `-c` writes nothing and reports only formatting, never your edits, so a
-clean working tree is not required.
+clean working tree is not required. Without a flag, pgfmt prints only a
+file it would change, so a file already in the style prints nothing.
 
 The library is the same thing without the flags:
 

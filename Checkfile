@@ -16,3 +16,21 @@ lint: out=$(goimports -local "$(go list -m)" -l .); if [ -n "$out" ]; then echo 
 # its output is the verdict: awk prints what it read, then fails if it
 # read a line.
 hints: git ls-files -z '*.go' | xargs -0 gopls check -severity=hint | awk '1; END { exit (NR > 0) }'
+
+# The unreachable half of a printer. deadcode reads the whole module,
+# so a function cmd/pgfmt still reaches stays live, and what it reports
+# is a layout path no statement takes: a clause emitter left behind by
+# the rule that replaced it. It exits 0 whether or not it found
+# anything, so its output is the verdict, as hints' is.
+deadcode: deadcode -test ./... 2>&1 | awk '1; END { exit (NR > 0) }'
+
+# The Markdown, which gofmt never sees. AGENTS.md and README.md carry
+# the rules an agent reads and the style this formatter promises, so
+# their own wrapping is nobody's to argue about. dprint.json names the
+# plugin and its hash, so a formatter upgrade is a commit.
+fmt: dprint check
+
+# scripts/tag, which nobody compiles. It pushes a tag to GitHub, and a
+# mistake there publishes a version a consumer cannot fetch, or none at
+# all. The file carries no extension, so name the directory as a path.
+shellcheck: git ls-files -z '*.sh' 'scripts/*' | xargs -0 shellcheck

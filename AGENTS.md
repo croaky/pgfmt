@@ -48,18 +48,20 @@ output to prove the tokens survived.
 ## Checks
 
 The root `Checkfile` is the list, and CI runs it on every push. Run the
-same things before committing, since a check that fails locally fails
-there:
+entries whose inputs you touched before committing, since a check that
+fails locally fails there. Read the commands from the `Checkfile`
+itself rather than from here, so the two cannot drift.
+
+Two of the tools it names can write the fix. Run them that way first,
+then let the checks confirm:
 
 ```sh
 goimports -local "$(go list -m)" -w .
-go vet ./...
-go test -race -cover ./...
-git ls-files -z '*.go' | xargs -0 gopls check -severity=hint
+dprint fmt
 ```
 
-The local `goimports` writes; the `lint` job only reports, because a CI
-job that rewrites source has nowhere to put it.
+The `lint` and `fmt` jobs only report, because a CI job that rewrites
+source has nowhere to put it.
 
 The package imports nothing outside the standard library. The only
 dependency is `github.com/croaky/is`, used for test assertions. Taking
