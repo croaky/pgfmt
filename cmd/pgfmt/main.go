@@ -5,8 +5,7 @@
 //	pgfmt -c file.sql ...       Check formatting; exit 1 if any file would
 //	                            change. Writes nothing.
 //	pgfmt -w file.sql ...       Format named files, writing in place.
-//	pgfmt file.sql ...          Format named files to stdout. A file
-//	                            already in the style prints nothing.
+//	pgfmt file.sql ...          Format named files to stdout.
 //	pgfmt < input.sql           Format stdin to stdout.
 //
 // -c reports only true formatting violations, never your edits, so a clean
@@ -64,6 +63,13 @@ func main() {
 			status = 2
 			continue
 		}
+		// Without a flag, stdout is the output, so a file already in the
+		// style prints as it is: `pgfmt in.sql > out.sql` must never
+		// leave out.sql empty. Only -c and -w have nothing to do for it.
+		if !*check && !*write {
+			io.WriteString(os.Stdout, out)
+			continue
+		}
 		if out == string(src) {
 			continue
 		}
@@ -74,16 +80,12 @@ func main() {
 			}
 			continue
 		}
-		if *write {
-			if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
-				fmt.Fprintln(os.Stderr, "pgfmt:", err)
-				status = 2
-				continue
-			}
-			fmt.Printf("Formatted %s\n", path)
-		} else {
-			io.WriteString(os.Stdout, out)
+		if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "pgfmt:", err)
+			status = 2
+			continue
 		}
+		fmt.Printf("Formatted %s\n", path)
 	}
 	os.Exit(status)
 }
