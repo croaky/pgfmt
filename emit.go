@@ -253,6 +253,18 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 		}
 		b.WriteByte('\n')
 		writeTerminator(b, c.trailer)
+	case "FOR UPDATE", "FOR NO KEY UPDATE", "FOR SHARE", "FOR KEY SHARE":
+		// The whole clause is one line. Its options name a table and a
+		// wait behavior, which a reader reads as one phrase rather than
+		// editing one per line.
+		writeIndent(b, base)
+		b.WriteString(c.keyword)
+		if len(c.body) > 0 {
+			b.WriteByte(' ')
+			b.WriteString(inline(upperLockOptions(c.body)))
+		}
+		b.WriteByte('\n')
+		writeTerminator(b, c.trailer)
 	case "RETURNING":
 		writeIndent(b, base)
 		b.WriteString("RETURNING\n")

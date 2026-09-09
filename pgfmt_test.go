@@ -679,6 +679,96 @@ func TestFormat(t *testing.T) {
 				") s;\n",
 		},
 		{
+			// FOR UPDATE ends a SELECT and locks the rows it read. The
+			// UPDATE in it names a lock strength, not a statement.
+			name: "FOR UPDATE owns its line",
+			in:   "select id from docs where id = $1 for update;",
+			want: "" +
+				"SELECT\n" +
+				"  id\n" +
+				"FROM\n" +
+				"  docs\n" +
+				"WHERE\n" +
+				"  id = $1\n" +
+				"FOR UPDATE;\n",
+		},
+		{
+			name: "FOR NO KEY UPDATE keeps its four words",
+			in:   "select id from docs for no key update;",
+			want: "" +
+				"SELECT\n" +
+				"  id\n" +
+				"FROM\n" +
+				"  docs\n" +
+				"FOR NO KEY UPDATE;\n",
+		},
+		{
+			name: "FOR KEY SHARE keeps its three words",
+			in:   "select id from docs for key share;",
+			want: "" +
+				"SELECT\n" +
+				"  id\n" +
+				"FROM\n" +
+				"  docs\n" +
+				"FOR KEY SHARE;\n",
+		},
+		{
+			// OF names the table to lock, and SKIP LOCKED says what to do
+			// with a row another transaction holds. Both stay on the line,
+			// since neither is a list a reader edits.
+			name: "FOR SHARE keeps OF and SKIP LOCKED on its line",
+			in:   "select id from docs d for share of d skip locked;",
+			want: "" +
+				"SELECT\n" +
+				"  id\n" +
+				"FROM\n" +
+				"  docs d\n" +
+				"FOR SHARE OF d SKIP LOCKED;\n",
+		},
+		{
+			name: "FOR UPDATE NOWAIT keeps NOWAIT on its line",
+			in:   "select id from docs for update nowait;",
+			want: "" +
+				"SELECT\n" +
+				"  id\n" +
+				"FROM\n" +
+				"  docs\n" +
+				"FOR UPDATE NOWAIT;\n",
+		},
+		{
+			// A CTE that locks the row it reads is how one statement
+			// returns the row a following UPDATE overwrites.
+			name: "FOR UPDATE inside a CTE",
+			in:   "with was as (select summary from docs where id = $1 for update) update docs set summary = $2 from was where docs.id = $1 returning was.summary;",
+			want: "" +
+				"WITH was AS (\n" +
+				"  SELECT\n" +
+				"    summary\n" +
+				"  FROM\n" +
+				"    docs\n" +
+				"  WHERE\n" +
+				"    id = $1\n" +
+				"  FOR UPDATE\n" +
+				")\n" +
+				"UPDATE\n" +
+				"  docs\n" +
+				"SET\n" +
+				"  summary = $2\n" +
+				"FROM\n" +
+				"  was\n" +
+				"WHERE\n" +
+				"  docs.id = $1\n" +
+				"RETURNING\n" +
+				"  was.summary;\n",
+		},
+		{
+			// FOR is a clause head only before a lock strength. A trigger
+			// says FOR EACH ROW, which is part of the statement it sits in.
+			name: "FOR EACH ROW is not a locking clause",
+			in:   "create trigger t after insert on docs for each row execute function f();",
+			want: "CREATE trigger t after INSERT ON docs FOR each row execute function f();\n",
+		},
+		{
 			// A leading parenthesized subquery argument must stay a
 			// function call, not be misread as a set-operation operand.
 			name: "function call with leading subquery arg",

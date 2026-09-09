@@ -89,6 +89,73 @@ func splitClauses(items []item) []clause {
 	return out
 }
 
+// lockStrengths are the four row-locking clauses, longest first, so FOR
+// NO KEY UPDATE matches before FOR UPDATE reads the same tokens.
+var lockStrengths = [][]string{
+	{"FOR", "NO", "KEY", "UPDATE"},
+	{"FOR", "KEY", "SHARE"},
+	{"FOR", "UPDATE"},
+	{"FOR", "SHARE"},
+}
+
+// lockOptions are the words that follow a lock strength: which table to
+// lock, and what to do with a row another transaction holds.
+var lockOptions = map[string]bool{
+	"OF": true, "NOWAIT": true, "SKIP": true, "LOCKED": true,
+}
+
+// matchLockingHead matches a row-locking clause at items[i], which
+// begins with FOR. It returns nil for any other FOR, such as the FOR
+// EACH ROW of a trigger, which stays inline in the statement it is in.
+//
+// Only FOR is a keyword to the lexer. NO, KEY, SHARE, and UPDATE are
+// matched whatever their case, and the canonical keyword the emitter
+// prints is uppercase.
+func matchLockingHead(items []item, i int) ([]item, string, int) {
+	for _, words := range lockStrengths {
+		if !matchWords(items, i, words) {
+			continue
+		}
+		n := len(words)
+		return items[i : i+n], strings.Join(words, " "), i + n
+	}
+	return nil, "", i
+}
+
+// matchWords reports whether items[i:] begins with these words, each
+// one token, whatever its case and whether the lexer called it a
+// keyword.
+func matchWords(items []item, i int, words []string) bool {
+	if i+len(words) > len(items) {
+		return false
+	}
+	for n, w := range words {
+		it := items[i+n]
+		if it.tok == nil || !strings.EqualFold(it.tok.val, w) {
+			return false
+		}
+	}
+	return true
+}
+
+// upperLockOptions returns the clause's options with OF, NOWAIT, SKIP,
+// and LOCKED uppercase. A table name between them keeps the case the
+// lexer gave it. The lexer cannot do this, since a column named `of`
+// or `locked` is legal everywhere else.
+func upperLockOptions(items []item) []item {
+	out := make([]item, len(items))
+	for n, it := range items {
+		out[n] = it
+		if it.tok == nil || !lockOptions[strings.ToUpper(it.tok.val)] {
+			continue
+		}
+		t := *it.tok
+		t.val = strings.ToUpper(t.val)
+		out[n] = item{tok: &t}
+	}
+	return out
+}
+
 // matchClauseHead returns the head tokens, canonical keyword, and the
 // index after the head if items[i:] begins a recognized clause head.
 func matchClauseHead(items []item, i int) ([]item, string, int) {
@@ -153,6 +220,10 @@ func matchClauseHead(items []item, i int) ([]item, string, int) {
 		return items[i : i+1], "INTERSECT", i + 1
 	case "EXCEPT":
 		return items[i : i+1], "EXCEPT", i + 1
+	case "FOR":
+		if head, key, after := matchLockingHead(items, i); head != nil {
+			return head, key, after
+		}
 	case "WITH":
 		if i+1 < len(items) && items[i+1].tok != nil &&
 			items[i+1].tok.kind == tkIdent && strings.EqualFold(items[i+1].tok.val, "ordinality") {

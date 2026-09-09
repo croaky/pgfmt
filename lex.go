@@ -41,6 +41,11 @@ var keywords = map[string]bool{
 	"using": true,
 	"group": true, "order": true, "by": true,
 	"limit": true, "offset": true,
+	// FOR opens a row-locking clause (FOR UPDATE). Postgres reserves the
+	// word, so it is never a bare identifier. The words after it (NO,
+	// KEY, SHARE, OF, NOWAIT, SKIP, LOCKED) are not reserved, so
+	// clause.go uppercases those where it recognizes the clause.
+	"for":       true,
 	"returning": true,
 	"on":        true, "conflict": true, "do": true, "nothing": true,
 	"union": true, "intersect": true, "except": true,
