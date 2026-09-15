@@ -427,6 +427,19 @@ func TestFormat(t *testing.T) {
 				"  args ? 'owner_id';\n",
 		},
 		{
+			// The operator, rather than the ts_match_vq function it
+			// calls: only the operator matches a GIN index.
+			name: "text-search match operator is recognized",
+			in:   "select id from docs where search_vector @@ to_tsquery('english', $1);",
+			want: "" +
+				"SELECT\n" +
+				"  id\n" +
+				"FROM\n" +
+				"  docs\n" +
+				"WHERE\n" +
+				"  search_vector @@ to_tsquery('english', $1);\n",
+		},
+		{
 			name: "array overlap operator is recognized",
 			in:   "select id from pos where pos.statuses && $1::text[];",
 			want: "" +

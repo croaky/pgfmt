@@ -121,9 +121,14 @@ func upcaseDDLKeywords(toks []token) {
 }
 
 // operators ordered by length (longest first) for correct longest-match.
+//
+// `@@` matches a tsvector against a tsquery. A formatter that refused
+// it sent the author to `ts_match_vq(v, q)`, the function the operator
+// calls, which reads the same and plans differently: an index matches
+// an operator, so the function form costs a sequential scan.
 var operators = []string{
 	"->>", "!~*",
-	"=>", "<>", "<=", ">=", "!=", "->", "~*", "!~", "::", "||", "&&", "@>", "<@",
+	"=>", "<>", "<=", ">=", "!=", "->", "~*", "!~", "::", "||", "&&", "@@", "@>", "<@",
 	"<", ">", "=", "+", "-", "*", "/", "%", ".", "~", "?",
 }
 
