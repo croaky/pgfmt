@@ -37,7 +37,11 @@ type token struct {
 var keywords = map[string]bool{
 	"select": true, "insert": true, "into": true, "values": true,
 	"update": true, "set": true, "delete": true, "with": true,
-	"from": true, "where": true, "having": true,
+	// MERGE opens a merge statement. The words in its WHEN heads
+	// (MATCHED, SOURCE, TARGET) are not reserved, so clause.go
+	// uppercases those where it recognizes the head.
+	"merge": true,
+	"from":  true, "where": true, "having": true,
 	"using": true,
 	"group": true, "order": true, "by": true,
 	"limit": true, "offset": true,

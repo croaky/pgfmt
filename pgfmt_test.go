@@ -488,6 +488,66 @@ func TestFormat(t *testing.T) {
 				"  jobs.id = ranked.id;\n",
 		},
 		{
+			// Each WHEN owns a line, as in CASE, and its action sits
+			// under it. The SET and VALUES lists wrap one per line so
+			// adding a column is a one-line diff, as in INSERT and UPDATE.
+			name: "MERGE puts each WHEN on its own line with the action under it",
+			in: "merge into growth_age as stored using computed on stored.company_id = computed.company_id " +
+				"when matched and row_data(stored) is distinct from row_data(computed) then " +
+				"update set age_in_years = computed.age_in_years, score = computed.score, updated_at = now() " +
+				"when not matched by source then delete " +
+				"when not matched then insert (company_id, age_in_years, score) " +
+				"values (computed.company_id, computed.age_in_years, computed.score);",
+			want: "" +
+				"MERGE INTO\n" +
+				"  growth_age AS stored\n" +
+				"USING\n" +
+				"  computed\n" +
+				"    ON stored.company_id = computed.company_id\n" +
+				"WHEN MATCHED AND row_data(stored) IS DISTINCT FROM row_data(computed) THEN\n" +
+				"  UPDATE SET\n" +
+				"    age_in_years = computed.age_in_years,\n" +
+				"    score = computed.score,\n" +
+				"    updated_at = now()\n" +
+				"WHEN NOT MATCHED BY SOURCE THEN\n" +
+				"  DELETE\n" +
+				"WHEN NOT MATCHED THEN\n" +
+				"  INSERT (\n" +
+				"    company_id,\n" +
+				"    age_in_years,\n" +
+				"    score\n" +
+				"  )\n" +
+				"  VALUES (\n" +
+				"    computed.company_id,\n" +
+				"    computed.age_in_years,\n" +
+				"    computed.score\n" +
+				"  );\n",
+		},
+		{
+			// A one-column list stays inline, as in INSERT INTO. A join
+			// condition with AND continues under ON, as in FROM.
+			name: "MERGE keeps a one-column list inline and DO NOTHING on one line",
+			in: "merge into t using s on t.id = s.id and t.kind = s.kind " +
+				"when matched and t.v <> s.v then update set v = s.v " +
+				"when not matched by target then insert (id) values (s.id) " +
+				"when not matched by source then do nothing;",
+			want: "" +
+				"MERGE INTO\n" +
+				"  t\n" +
+				"USING\n" +
+				"  s\n" +
+				"    ON t.id = s.id\n" +
+				"    AND t.kind = s.kind\n" +
+				"WHEN MATCHED AND t.v <> s.v THEN\n" +
+				"  UPDATE SET\n" +
+				"    v = s.v\n" +
+				"WHEN NOT MATCHED BY TARGET THEN\n" +
+				"  INSERT (id)\n" +
+				"  VALUES (s.id)\n" +
+				"WHEN NOT MATCHED BY SOURCE THEN\n" +
+				"  DO NOTHING;\n",
+		},
+		{
 			name: "truncate statement uses uppercase keyword and no leading whitespace",
 			in:   "truncate t;\n\ninsert into t (a) values ($1);",
 			want: "" +

@@ -274,6 +274,10 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 		emitOnConflict(b, c, base)
 	case "INSERT INTO":
 		emitInsertInto(b, c, base)
+	case "MERGE INTO":
+		emitMergeInto(b, c, base)
+	case "WHEN MATCHED":
+		emitMergeWhen(b, c, base)
 	case "UPDATE":
 		writeIndent(b, base)
 		b.WriteString("UPDATE\n")
@@ -981,6 +985,130 @@ func emitInsertInto(b *bytes.Buffer, c clause, base int) {
 		b.WriteByte('\n')
 	}
 	writeTerminator(b, c.trailer)
+}
+
+// ----------------------------------------------------------------------
+// MERGE.
+
+// emitMergeInto handles MERGE INTO <target> USING <source> ON <cond>.
+// The target and the source each take a line under their keyword, as
+// in DELETE FROM ... USING. The join condition continues under the
+// source, as ON does under a JOIN.
+func emitMergeInto(b *bytes.Buffer, c clause, base int) {
+	target := c.body
+	source := []item(nil)
+	if usingIdx := indexTopKeyword(c.body, "USING"); usingIdx >= 0 {
+		target = c.body[:usingIdx]
+		source = c.body[usingIdx+1:]
+	}
+	writeIndent(b, base)
+	b.WriteString("MERGE INTO\n")
+	writeIndent(b, base+2)
+	b.WriteString(inline(target))
+	b.WriteByte('\n')
+	if len(source) > 0 {
+		writeIndent(b, base)
+		b.WriteString("USING\n")
+		if onIdx := indexTopKeyword(source, "ON"); onIdx >= 0 {
+			emitJoinPart(b, source, onIdx, base+2)
+		} else {
+			writeIndent(b, base+2)
+			emitExpr(b, source, base+2)
+			b.WriteByte('\n')
+		}
+	}
+	writeTerminator(b, c.trailer)
+}
+
+// emitMergeWhen handles WHEN [NOT] MATCHED [BY SOURCE] [AND cond] THEN
+// <action>. The head and its condition share a line that ends in THEN,
+// and the action sits under it, as a CASE branch does. A condition
+// that does not fit continues at the action's indent.
+func emitMergeWhen(b *bytes.Buffer, c clause, base int) {
+	writeIndent(b, base)
+	b.WriteString(strings.ToUpper(inline(c.head)))
+	thenIdx := nextCaseToken(c.body, 0, "THEN")
+	cond := c.body[:thenIdx]
+	action := []item(nil)
+	if thenIdx < len(c.body) {
+		action = c.body[thenIdx+1:]
+	}
+	if len(cond) > 0 && cond[0].isKW("AND") {
+		b.WriteString(" AND ")
+		emitWhenCondition(b, cond[1:], base, base+2)
+	}
+	b.WriteString(" THEN\n")
+	emitMergeAction(b, action, base+2)
+	writeTerminator(b, c.trailer)
+}
+
+// emitMergeAction prints one MERGE action. UPDATE SET and INSERT wrap
+// their lists one per line, as the statements of the same name do.
+// DELETE and DO NOTHING are one line.
+func emitMergeAction(b *bytes.Buffer, action []item, indent int) {
+	switch {
+	case len(action) >= 2 && action[0].isKW("UPDATE") && action[1].isKW("SET"):
+		writeIndent(b, indent)
+		b.WriteString("UPDATE SET\n")
+		emitCommaList(b, action[2:], indent+2)
+	case len(action) >= 1 && action[0].isKW("INSERT"):
+		emitMergeInsert(b, action, indent)
+	default:
+		writeIndent(b, indent)
+		b.WriteString(inline(action))
+		b.WriteByte('\n')
+	}
+}
+
+// emitMergeInsert handles INSERT [(cols)] VALUES (vals) inside a MERGE.
+// The column list and the value list each open on their keyword's
+// line, and a one-element list stays inline, as in INSERT INTO.
+func emitMergeInsert(b *bytes.Buffer, action []item, indent int) {
+	writeIndent(b, indent)
+	b.WriteString("INSERT")
+	rest := action[1:]
+	if len(rest) > 0 && rest[0].grp != nil {
+		b.WriteByte(' ')
+		emitMergeList(b, rest[0].grp, indent)
+		rest = rest[1:]
+	}
+	valuesIdx := indexTopKeyword(rest, "VALUES")
+	if valuesIdx < 0 {
+		if len(rest) > 0 {
+			b.WriteByte(' ')
+			b.WriteString(inline(rest))
+		}
+		b.WriteByte('\n')
+		return
+	}
+	if valuesIdx > 0 {
+		b.WriteByte(' ')
+		b.WriteString(inline(rest[:valuesIdx]))
+	}
+	b.WriteByte('\n')
+	writeIndent(b, indent)
+	b.WriteString("VALUES")
+	vals := rest[valuesIdx+1:]
+	if len(vals) == 1 && vals[0].grp != nil {
+		b.WriteByte(' ')
+		emitMergeList(b, vals[0].grp, indent)
+	} else if len(vals) > 0 {
+		b.WriteByte(' ')
+		b.WriteString(inline(vals))
+	}
+	b.WriteByte('\n')
+}
+
+// emitMergeList prints a parenthesized list: inline when it holds one
+// element, one per line otherwise.
+func emitMergeList(b *bytes.Buffer, g *group, indent int) {
+	if len(splitTopComma(g.items)) == 1 {
+		b.WriteByte('(')
+		b.WriteString(inline(g.items))
+		b.WriteByte(')')
+		return
+	}
+	emitListWrapped(b, g, indent)
 }
 
 // emitValues handles VALUES (tuple1), (tuple2), ...

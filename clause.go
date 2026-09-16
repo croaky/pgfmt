@@ -55,6 +55,14 @@ func splitClauses(items []item) []clause {
 				i++
 				break
 			}
+			// A MERGE action is UPDATE SET, INSERT ... VALUES, DELETE, or
+			// DO NOTHING. The first two carry clause heads, and they stay
+			// in the WHEN clause so the emitter can print them under it.
+			if c.keyword == "WHEN MATCHED" && items[i].isKW("UPDATE", "SET", "VALUES") {
+				c.body = append(c.body, items[i])
+				i++
+				continue
+			}
 			// Inside ON CONFLICT, keep conflict-target WHERE (before DO)
 			// and DO UPDATE SET tokens in the same clause.
 			if c.keyword == "ON CONFLICT" {
@@ -118,6 +126,36 @@ func matchLockingHead(items []item, i int) ([]item, string, int) {
 		}
 		n := len(words)
 		return items[i : i+n], strings.Join(words, " "), i + n
+	}
+	return nil, "", i
+}
+
+// mergeWhenHeads are the WHEN heads of a MERGE, longest first, so WHEN
+// NOT MATCHED BY SOURCE matches before WHEN NOT MATCHED reads the same
+// tokens. BY TARGET names the same case as a bare WHEN NOT MATCHED; it
+// stays as written.
+var mergeWhenHeads = [][]string{
+	{"WHEN", "NOT", "MATCHED", "BY", "SOURCE"},
+	{"WHEN", "NOT", "MATCHED", "BY", "TARGET"},
+	{"WHEN", "NOT", "MATCHED"},
+	{"WHEN", "MATCHED"},
+}
+
+// matchMergeWhenHead matches a MERGE WHEN head at items[i], which
+// begins with WHEN. It returns nil for any other WHEN, such as the WHEN
+// of a CASE, which stays in the expression it is in. Every head shares
+// the canonical keyword WHEN MATCHED, so one emitter prints them all.
+//
+// Only WHEN, NOT, and BY are keywords to the lexer. MATCHED, SOURCE,
+// and TARGET are matched whatever their case, and the emitter prints
+// the head uppercase.
+func matchMergeWhenHead(items []item, i int) ([]item, string, int) {
+	for _, words := range mergeWhenHeads {
+		if !matchWords(items, i, words) {
+			continue
+		}
+		n := len(words)
+		return items[i : i+n], "WHEN MATCHED", i + n
 	}
 	return nil, "", i
 }
@@ -200,6 +238,14 @@ func matchClauseHead(items []item, i int) ([]item, string, int) {
 	case "INSERT":
 		if i+1 < len(items) && items[i+1].isKW("INTO") {
 			return items[i : i+2], "INSERT INTO", i + 2
+		}
+	case "MERGE":
+		if i+1 < len(items) && items[i+1].isKW("INTO") {
+			return items[i : i+2], "MERGE INTO", i + 2
+		}
+	case "WHEN":
+		if head, key, after := matchMergeWhenHead(items, i); head != nil {
+			return head, key, after
 		}
 	case "UPDATE":
 		return items[i : i+1], "UPDATE", i + 1
