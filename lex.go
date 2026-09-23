@@ -239,20 +239,16 @@ func lex(src string) ([]token, error) {
 			i = j
 			continue
 		}
-		// Number: digits[.digits].
+		// Number.
 		if isDigit(ch) {
-			j, seenDot := i, false
-			for j < n {
-				if isDigit(src[j]) {
-					j++
-					continue
-				}
-				if src[j] == '.' && !seenDot {
-					seenDot = true
-					j++
-					continue
-				}
-				break
+			j := numberEnd(src, i)
+			// A letter against the end of a number means the scan
+			// read less than the author wrote. Emitting two tokens
+			// would print `1e6` as `1 e6`, which re-lexes as the same
+			// two tokens, so the round-trip check in Format cannot see
+			// it. Refuse instead: Postgres rejects the same input.
+			if j < n && isIdentStart(src[j]) {
+				return nil, fmt.Errorf("pgfmt: trailing junk after numeric literal at offset %d", i)
 			}
 			toks = append(toks, token{kind: tkNumber, val: src[i:j], blanksBefore: blanks})
 			blanks = 0
@@ -321,6 +317,91 @@ func lex(src string) ([]token, error) {
 	}
 	toks = append(toks, token{kind: tkEOF, blanksBefore: blanks})
 	return toks, nil
+}
+
+// numberEnd returns the offset one past the numeric literal that starts
+// at i, which the caller has checked begins with a digit.
+//
+// It reads the whole grammar rather than digits and one dot. The short
+// version stopped at the first letter, and the lexer then read that
+// letter as an identifier, so a literal came apart into two tokens with
+// a space between them: 1e6 printed as "1 e6" and 0x1f as "0 x1f".
+// The caller refuses a literal this stops short of, so a gap in the
+// grammar here is an error and not a rewritten file.
+//
+// The literal keeps the bytes the author wrote. Numbers are not cased
+// or normalized anywhere else here either: 1.50 keeps its zero and
+// 0xDEAD keeps its capitals, the same way this does not rewrite 1e6 as
+// 1000000.
+func numberEnd(src string, i int) int {
+	n := len(src)
+	// A radix prefix takes its own digits and no dot or exponent: 0x1f
+	// is hex and 0x1e5 is one hex number, not hex with an exponent.
+	if src[i] == '0' && i+2 < n {
+		var radix string
+		switch src[i+1] {
+		case 'x', 'X':
+			radix = hexDigits
+		case 'o', 'O':
+			radix = octalDigits
+		case 'b', 'B':
+			radix = binaryDigits
+		}
+		if strings.IndexByte(radix, src[i+2]) >= 0 {
+			return runOfDigits(src, i+2, radix)
+		}
+	}
+
+	j := runOfDigits(src, i, decimalDigits)
+	if j < n && src[j] == '.' {
+		j = runOfDigits(src, j+1, decimalDigits)
+	}
+
+	// An exponent needs at least one digit, after an optional sign.
+	// Without one the `e` is the start of something else, so the
+	// number ends before it: Postgres rejects `1e` as a literal, and
+	// guessing otherwise would read the next word into the number.
+	if j < n && (src[j] == 'e' || src[j] == 'E') {
+		k := j + 1
+		if k < n && (src[k] == '+' || src[k] == '-') {
+			k++
+		}
+		if k < n && isDigit(src[k]) {
+			j = runOfDigits(src, k, decimalDigits)
+		}
+	}
+	return j
+}
+
+// The digits each radix accepts, as a set runOfDigits searches.
+const (
+	decimalDigits = "0123456789"
+	hexDigits     = "0123456789abcdefABCDEF"
+	octalDigits   = "01234567"
+	binaryDigits  = "01"
+)
+
+// runOfDigits returns the offset one past a run of digits that may hold
+// an underscore between two of them.
+//
+// Postgres 16 added the separator, for a literal a reader can count:
+// 1_000_000. It has to sit between digits, so a trailing one ends the
+// number and leaves an identifier, which is what Postgres reads too.
+func runOfDigits(src string, i int, digits string) int {
+	n := len(src)
+	j := i
+	for j < n {
+		if strings.IndexByte(digits, src[j]) >= 0 {
+			j++
+			continue
+		}
+		if src[j] == '_' && j+1 < n && strings.IndexByte(digits, src[j+1]) >= 0 {
+			j += 2
+			continue
+		}
+		break
+	}
+	return j
 }
 
 func isDigit(ch byte) bool { return ch >= '0' && ch <= '9' }

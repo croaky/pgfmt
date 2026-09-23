@@ -468,6 +468,48 @@ func TestFormat(t *testing.T) {
 				"  jobs.status = ANY (ARRAY['pending', 'started']);\n",
 		},
 		{
+			name: "exponent stays part of its number",
+			in:   "select a * 1e6, 1.5e-3, 2E10 from t;",
+			want: "" +
+				"SELECT\n" +
+				"  a * 1e6,\n" +
+				"  1.5e-3,\n" +
+				"  2E10\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
+			name: "underscore separates digits",
+			in:   "select 1_000_000, 1_000.000_1 from t;",
+			want: "" +
+				"SELECT\n" +
+				"  1_000_000,\n" +
+				"  1_000.000_1\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
+			name: "hex, octal, and binary literals stay whole",
+			in:   "select 0x1f, 0o777, 0b1010, 0xDEAD_BEEF from t;",
+			want: "" +
+				"SELECT\n" +
+				"  0x1f,\n" +
+				"  0o777,\n" +
+				"  0b1010,\n" +
+				"  0xDEAD_BEEF\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
+			// Postgres wants a digit after the `e`, so `1e` is not an
+			// exponent and Postgres rejects it. The lexer refuses it
+			// too, rather than reading `1` and `e` and printing them
+			// apart. An empty want means Format returns an error.
+			name: "a number against a letter is refused",
+			in:   "select 1e from t;",
+			want: "",
+		},
+		{
 			name: "escape string literal keeps E prefix attached",
 			in:   "select concat_ws(e'\\n', a, b) from t;",
 			want: "" +
