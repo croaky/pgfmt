@@ -208,6 +208,30 @@ func TestFormat(t *testing.T) {
 				"  summary = EXCLUDED.summary;\n",
 		},
 		{
+			// A WHERE after DO filters the update, not the conflict
+			// target, so it starts its own clause.
+			name: "ON CONFLICT DO UPDATE WHERE starts a WHERE clause",
+			in: "insert into t (id, v) values ($1, $2) " +
+				"on conflict (id) do update set v = excluded.v " +
+				"where t.v is distinct from excluded.v;",
+			want: "" +
+				"INSERT INTO t (\n" +
+				"  id,\n" +
+				"  v\n" +
+				")\n" +
+				"VALUES (\n" +
+				"  $1,\n" +
+				"  $2\n" +
+				")\n" +
+				"ON CONFLICT (\n" +
+				"  id\n" +
+				")\n" +
+				"DO UPDATE SET\n" +
+				"  v = EXCLUDED.v\n" +
+				"WHERE\n" +
+				"  t.v IS DISTINCT FROM EXCLUDED.v;\n",
+		},
+		{
 			name: "paired jsonb_build_object wraps two args per line",
 			in:   "select jsonb_build_object('user_id', $1::bigint, 'win_end', $2::text, 'phase', $3::text, 'next_url', $4::text) from t;",
 			want: "" +

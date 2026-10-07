@@ -48,53 +48,54 @@ func splitClauses(items []item) []clause {
 			continue
 		}
 		c := clause{keyword: key, head: head}
+		keeps := keptHeads(key)
+		sawDo := false
 		i = after
 		for i < len(items) {
-			if items[i].isTok(";") {
+			it := items[i]
+			if it.isTok(";") {
 				c.trailer = ";"
 				i++
 				break
 			}
-			// A MERGE action is UPDATE SET, INSERT ... VALUES, DELETE, or
-			// DO NOTHING. The first two carry clause heads, and they stay
-			// in the WHEN clause so the emitter can print them under it.
-			if c.keyword == "WHEN MATCHED" && items[i].isKW("UPDATE", "SET", "VALUES") {
-				c.body = append(c.body, items[i])
-				i++
-				continue
-			}
-			// Inside ON CONFLICT, keep conflict-target WHERE (before DO)
-			// and DO UPDATE SET tokens in the same clause.
-			if c.keyword == "ON CONFLICT" {
-				if items[i].isKW("UPDATE", "SET") {
-					c.body = append(c.body, items[i])
-					i++
-					continue
-				}
-				if items[i].isKW("WHERE") {
-					sawDo := false
-					for _, b := range c.body {
-						if b.isKW("DO") {
-							sawDo = true
-							break
-						}
-					}
-					if !sawDo {
-						c.body = append(c.body, items[i])
-						i++
-						continue
-					}
+			if !keeps(it, sawDo) {
+				if h2, _, _ := matchClauseHead(items, i); h2 != nil {
+					break
 				}
 			}
-			if h2, _, _ := matchClauseHead(items, i); h2 != nil {
-				break
-			}
-			c.body = append(c.body, items[i])
+			sawDo = sawDo || it.isKW("DO")
+			c.body = append(c.body, it)
 			i++
 		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// keptHeads returns the test that splitClauses applies to each body
+// token of a clause with this keyword. A token that passes stays in
+// the body, also when it starts a clause head. sawDo tells the test
+// whether the body already holds a DO. splitClauses selects the test
+// once for each clause, so the token loop does not compare the
+// keyword again for each token.
+func keptHeads(keyword string) func(it item, sawDo bool) bool {
+	switch keyword {
+	case "WHEN MATCHED":
+		// A MERGE action is UPDATE SET, INSERT ... VALUES, DELETE, or
+		// DO NOTHING. The first two carry clause heads, and they stay
+		// in the WHEN clause so the emitter can print them under it.
+		return func(it item, _ bool) bool {
+			return it.isKW("UPDATE", "SET", "VALUES")
+		}
+	case "ON CONFLICT":
+		// DO UPDATE SET stays in the clause. A WHERE before DO limits
+		// the conflict target and stays too. A WHERE after DO filters
+		// the update and starts its own clause.
+		return func(it item, sawDo bool) bool {
+			return it.isKW("UPDATE", "SET") || (!sawDo && it.isKW("WHERE"))
+		}
+	}
+	return func(item, bool) bool { return false }
 }
 
 // lockStrengths are the four row-locking clauses, longest first, so FOR
