@@ -17,6 +17,9 @@ func Format(src string) (string, error) {
 		return "", err
 	}
 	upcaseDDLKeywords(toks)
+	if err := checkDepth(toks); err != nil {
+		return "", err
+	}
 	items := buildTree(toks)
 	var b bytes.Buffer
 	pTop(&b, items)

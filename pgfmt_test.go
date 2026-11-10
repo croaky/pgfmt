@@ -1,10 +1,33 @@
 package pgfmt
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/croaky/is"
 )
+
+// nestedParens is the output for a SELECT of 1 inside n parens. Each
+// paren wraps onto its own line, two spaces deeper than the last.
+func nestedParens(n int) string {
+	var b strings.Builder
+	b.WriteString("SELECT\n")
+	for i := range n {
+		b.WriteString(strings.Repeat(" ", 2+2*i))
+		b.WriteString("(\n")
+	}
+	b.WriteString(strings.Repeat(" ", 2+2*n))
+	b.WriteString("1\n")
+	for i := n - 1; i >= 0; i-- {
+		b.WriteString(strings.Repeat(" ", 2+2*i))
+		b.WriteString(")")
+		if i > 0 {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(";\n")
+	return b.String()
+}
 
 // TestFormat covers each rule of the locked style with input → output.
 func TestFormat(t *testing.T) {
@@ -980,6 +1003,43 @@ func TestFormat(t *testing.T) {
 				"  coalesce((SELECT max(id) FROM u), 0) AS m\n" +
 				"FROM\n" +
 				"  t;\n",
+		},
+		{
+			// Postgres refuses a ( that never closes and a ) with no (.
+			name: "unclosed paren is an error",
+			in:   "select (1;",
+		},
+		{
+			name: "close paren without open is an error",
+			in:   "select 1);",
+		},
+		{
+			// maxDepth groups is the deepest nesting Format accepts.
+			name: "nesting at the depth limit formats",
+			in:   "select " + strings.Repeat("(", maxDepth) + "1" + strings.Repeat(")", maxDepth) + ";",
+			want: nestedParens(maxDepth),
+		},
+		{
+			name: "nesting past the depth limit is an error",
+			in:   "select " + strings.Repeat("(", maxDepth+1) + "1" + strings.Repeat(")", maxDepth+1) + ";",
+		},
+		{
+			name: "10,000 closed parens is an error",
+			in:   "select " + strings.Repeat("(", 10000) + "1" + strings.Repeat(")", 10000) + ";",
+		},
+		{
+			name: "10,000 unclosed parens is an error",
+			in:   "select " + strings.Repeat("(", 10000) + "1;",
+		},
+		{
+			name: "10,000 nested CASE is an error",
+			in:   "select " + strings.Repeat("case when x then ", 10000) + "1" + strings.Repeat(" end", 10000) + ";",
+		},
+		{
+			// END also ends a transaction, outside any CASE.
+			name: "END as a statement keeps formatting",
+			in:   "begin; select 1; end;",
+			want: "BEGIN;\nSELECT\n  1;\nEND;\n",
 		},
 	}
 	for _, tt := range tests {

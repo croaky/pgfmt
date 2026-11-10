@@ -79,6 +79,15 @@ a backslash escapes the next byte. Block comments nest. A `--` comment
 ends at CR or LF. Postgres joins two strings that a newline separates,
 and pgfmt refuses that form with an error.
 
+## Limits
+
+pgfmt refuses a `(` that never closes and a `)` with no `(`, as
+Postgres does. It also refuses parens and `CASE` that nest deeper than
+100 levels. Each level costs stack, a deeper indent on each line, and
+one more pass to measure the line. The limit keeps the output, memory,
+and time of `Format` in proportion to the input, whatever the input.
+Hand-written queries nest far less deep.
+
 ## GitHub repo is a mirror
 
 Development happens on [sockeye](https://sockeye.sh), a

@@ -3,7 +3,11 @@
 
 package pgfmt
 
-import "slices"
+import (
+	"errors"
+	"fmt"
+	"slices"
+)
 
 // parenKind classifies parenthesized groups so the printer can choose the
 // right wrap style.
@@ -51,6 +55,45 @@ func (it item) blanksBefore() int {
 		return it.grp.items[0].blanksBefore()
 	}
 	return 0
+}
+
+// maxDepth is the deepest nesting of parens and CASE that Format
+// accepts. The tree and emit stages recurse once for each level, the
+// indent grows two spaces for each level, and the fits-on-one-line
+// measure in emitExpr reads the subtree again at each level. The limit
+// bounds all three: the stack, the output at about 200 spaces of indent
+// on a line, and the CPU time at input size times maxDepth. Hand-written
+// SQL stays far below 100 levels.
+const maxDepth = 100
+
+// checkDepth returns an error if parens do not balance, as Postgres
+// does, or if parens and CASE together nest deeper than maxDepth. It
+// reads the tokens once, before buildTree recurses. END lowers the CASE
+// count only inside a CASE, because END is also a statement.
+func checkDepth(toks []token) error {
+	parens, cases := 0, 0
+	for _, t := range toks {
+		switch {
+		case t.kind == tkPunct && t.val == "(":
+			parens++
+		case t.kind == tkPunct && t.val == ")":
+			if parens == 0 {
+				return errors.New("pgfmt: ) without (")
+			}
+			parens--
+		case t.kind == tkKeyword && t.val == "CASE":
+			cases++
+		case t.kind == tkKeyword && t.val == "END" && cases > 0:
+			cases--
+		}
+		if parens+cases > maxDepth {
+			return fmt.Errorf("pgfmt: parens and CASE nest deeper than %d", maxDepth)
+		}
+	}
+	if parens > 0 {
+		return errors.New("pgfmt: ( without )")
+	}
+	return nil
 }
 
 // buildTree converts a flat token slice into a tree of items, grouping

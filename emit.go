@@ -25,24 +25,24 @@ var pairedFns = map[string]bool{
 // inline renders items as a single-line string.
 func inline(items []item) string {
 	var b strings.Builder
-	for i := range items {
-		if i > 0 && needSpace(items[i-1], items[i]) {
-			b.WriteByte(' ')
-		}
-		writeInlineItem(&b, items[i])
-	}
+	writeInline(&b, items)
 	return b.String()
 }
 
-func writeInlineItem(b *strings.Builder, it item) {
-	if it.tok != nil {
-		b.WriteString(it.tok.val)
-		return
-	}
-	if it.grp != nil {
-		b.WriteByte('(')
-		b.WriteString(inline(it.grp.items))
-		b.WriteByte(')')
+// writeInline writes items on one line into b. A nested group writes
+// into the same b, so each byte is copied once at any depth.
+func writeInline(b *strings.Builder, items []item) {
+	for i, it := range items {
+		if i > 0 && needSpace(items[i-1], it) {
+			b.WriteByte(' ')
+		}
+		if it.tok != nil {
+			b.WriteString(it.tok.val)
+		} else if it.grp != nil {
+			b.WriteByte('(')
+			writeInline(b, it.grp.items)
+			b.WriteByte(')')
+		}
 	}
 }
 
@@ -407,12 +407,11 @@ func splitTopComma(items []item) [][]item {
 // emitExpr emits a single expression at the given indent. Handles nested
 // groups (functions, predicate groups, subqueries) and CASE.
 func emitExpr(b *bytes.Buffer, items []item, indent int) {
-	if len(items) > 0 && items[0].isComment() {
+	for len(items) > 0 && items[0].isComment() {
 		b.WriteString(items[0].tok.val)
 		b.WriteByte('\n')
 		writeIndent(b, indent)
-		emitExpr(b, items[1:], indent)
-		return
+		items = items[1:]
 	}
 	s := inline(items)
 	fits := currentCol(b)+len(s) <= lineLimit && !hasSubquery(items)
