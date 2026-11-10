@@ -73,6 +73,20 @@ var keywords = map[string]bool{
 	"excluded": true, // ON CONFLICT DO UPDATE pseudo-row
 }
 
+// upperKeywords maps each keyword, lowercase and uppercase, to its
+// uppercase form. lex reads the form from here, so it allocates no new
+// string for a keyword. Format lexes its own output, where each keyword
+// is already uppercase, so that pass also lowercases no keyword.
+var upperKeywords = func() map[string]string {
+	m := make(map[string]string, 2*len(keywords))
+	for k := range keywords {
+		up := strings.ToUpper(k)
+		m[k] = up
+		m[up] = up
+	}
+	return m
+}()
+
 // ddlKeywords are uppercased only inside DDL statements (see ddlStarters).
 // They are not global keywords because several double as ordinary
 // identifiers in DML: e.g. the `value, index` column list of WITH
@@ -124,8 +138,10 @@ func upcaseDDLKeywords(toks []token) {
 	}
 }
 
-func lex(src string) ([]token, error) {
-	var toks []token
+// lex reads src into tokens. want is the number of tokens the caller
+// expects, which sets the first capacity of the slice.
+func lex(src string, want int) ([]token, error) {
+	toks := make([]token, 0, want)
 	i, n := 0, len(src)
 	blanks := 0
 	for i < n {
@@ -197,14 +213,24 @@ func lex(src string) ([]token, error) {
 		// `x '1F'`, which Postgres reads as a typed literal.
 		if p := stringPrefix(src, i); p >= 0 {
 			q := i + p
-			j, closed := quoteEnd(src, q+1, strings.ToLower(src[i:q]))
+			var prefix byte
+			if p > 0 {
+				prefix = src[i] | 0x20 // ASCII lowercase
+			}
+			j, closed := quoteEnd(src, q+1, prefix)
 			if !closed {
 				return nil, fmt.Errorf("pgfmt: unterminated string literal at offset %d", i)
 			}
 			if continuesString(src, j) {
 				return nil, fmt.Errorf("pgfmt: string literal continued on a new line at offset %d", i)
 			}
-			toks = append(toks, token{kind: tkString, val: strings.ToUpper(src[i:q]) + src[q:j], blanksBefore: blanks})
+			// The prefix prints in uppercase. A literal with no prefix
+			// or an uppercase one keeps a slice of src, with no copy.
+			val := src[i:j]
+			if strings.ContainsAny(src[i:q], "ebxnu") {
+				val = strings.ToUpper(src[i:q]) + src[q:j]
+			}
+			toks = append(toks, token{kind: tkString, val: val, blanksBefore: blanks})
 			blanks = 0
 			i = j
 			continue
@@ -261,10 +287,14 @@ func lex(src string) ([]token, error) {
 			for j < n && (isIdentCont(src[j]) || src[j] == '$') {
 				j++
 			}
-			lc := strings.ToLower(src[i:j])
-			kind, out := tkIdent, lc
-			if keywords[lc] {
-				kind, out = tkKeyword, strings.ToUpper(lc)
+			word := src[i:j]
+			up, ok := upperKeywords[word]
+			if !ok {
+				up, ok = upperKeywords[strings.ToLower(word)]
+			}
+			kind, out := tkKeyword, up
+			if !ok {
+				kind, out = tkIdent, strings.ToLower(word)
 			}
 			toks = append(toks, token{kind: kind, val: out, blanksBefore: blanks})
 			blanks = 0
@@ -273,7 +303,8 @@ func lex(src string) ([]token, error) {
 		}
 		// Punctuation.
 		if ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ',' || ch == ';' {
-			toks = append(toks, token{kind: tkPunct, val: string(ch), blanksBefore: blanks})
+			// A slice of src, since string(ch) allocates for each token.
+			toks = append(toks, token{kind: tkPunct, val: src[i : i+1], blanksBefore: blanks})
 			blanks = 0
 			i++
 			continue
@@ -453,15 +484,15 @@ func stringPrefix(src string, i int) int {
 
 // quoteEnd returns the offset one past the quote that ends a string
 // literal whose body starts at j, and whether that quote exists. The
-// prefix sets the rules, as in Postgres. In an E string, a backslash
-// escapes the next byte, so `\'` never ends the string. A B or X
-// string ends at the first quote. The others read a doubled quote as
-// one quote.
-func quoteEnd(src string, j int, prefix string) (int, bool) {
-	doubled := prefix != "b" && prefix != "x"
+// prefix, the first byte of the literal in lowercase or 0 for none,
+// sets the rules, as in Postgres. In an E string, a backslash escapes
+// the next byte, so `\'` never ends the string. A B or X string ends
+// at the first quote. The others read a doubled quote as one quote.
+func quoteEnd(src string, j int, prefix byte) (int, bool) {
+	doubled := prefix != 'b' && prefix != 'x'
 	for j < len(src) {
 		switch {
-		case src[j] == '\\' && prefix == "e":
+		case src[j] == '\\' && prefix == 'e':
 			j += 2
 		case src[j] != '\'':
 			j++

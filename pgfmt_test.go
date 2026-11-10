@@ -1119,3 +1119,79 @@ func TestFormat(t *testing.T) {
 		})
 	}
 }
+
+// benchFile is a migration of the kind pgfmt formats: header comments,
+// DDL, a CTE, joins, CASE, a long function call that wraps, an upsert,
+// a MERGE, and a PL/pgSQL body in a dollar quote. It also holds the
+// forms the lexer reads by the Postgres rules: compound operators,
+// prefixed strings, a backslash escape, and a nested block comment.
+const benchFile = `-- Add the scores table and backfill it.
+/* outer /* nested */ comment */
+create table if not exists scores (id bigint primary key, doc_id bigint not null, grade text, score numeric, tags text[], created_at timestamptz);
+
+create index concurrently if not exists scores_doc_id_idx on scores (doc_id);
+
+with recent as materialized (select d.id, d.name, d.status from docs d where d.created_at > now() - interval '7 days' and d.deleted_at is null), ranked as (select r.id, row_number() over (partition by r.status order by r.id desc) as rn from recent r) select r.id, r.name, case when r.status = 'a' then 1 when r.status = 'b' then 2 else 3 end as rank, coalesce(s.score, 0) + coalesce(s.bonus, 0) + coalesce(s.extra, 0) as total, jsonb_build_object('id', r.id, 'name', r.name, 'status', r.status, 'score', s.score) as doc from recent r join ranked k on k.id = r.id and k.rn <= 10 left join scores s on s.doc_id = r.id where r.name ilike '%' || $1 || '%' and (r.status in ('a', 'b', 'c') or r.id = any($2)) and s.tags @> array['x'] and s.grade <> E'it\'s' order by r.id desc limit 50 offset $3;
+
+insert into scores (id, doc_id, grade, score) values ($1, $2, $3, $4), ($5, $6, $7, $8) on conflict (id) do update set grade = excluded.grade, score = excluded.score returning id;
+
+merge into scores s using docs d on s.doc_id = d.id when matched and d.deleted_at is not null then delete when not matched then insert (doc_id, grade) values (d.id, 'new');
+
+update scores set score = score * 2, tags = tags || array['bumped'] from docs where docs.id = scores.doc_id and docs.flags & X'0F' = B'1' and docs.pos << 2 > 0 returning scores.id;
+
+select ts_headline('english', name || ' ' || coalesce(description, '') || ' ' || coalesce(status, ''), to_tsquery('english', $2), 'MaxWords=10, MinWords=5') as headline from doc_search where doc_search.body @@ to_tsquery('english', $2) and doc_search.meta #>> '{a,b}' is not null;
+
+create function bump() returns trigger as $fn$ begin new.score := new.score + 1; return new; end; $fn$ language plpgsql;
+
+begin;
+delete from scores using docs where docs.id = scores.doc_id and docs.status = 'gone';
+commit;
+`
+
+// BenchmarkFormat runs Format on the inputs a caller passes: one short
+// query, a migration, a large file of many migrations, and SQL at the
+// depth limit that checkDepth enforces.
+func BenchmarkFormat(b *testing.B) {
+	depth := "select " + strings.Repeat("(", maxDepth) + "1" + strings.Repeat(")", maxDepth) + ";"
+	cases := []struct{ name, in string }{
+		{"query", "select id, name from t where x = 1 order by id desc;"},
+		{"migration", benchFile},
+		{"large", strings.Repeat(benchFile+"\n", 100)},
+		{"depth", depth},
+		{"case", "select " + strings.Repeat("case when x = 1 then ", maxDepth) + "1" + strings.Repeat(" else 2 end", maxDepth) + ";"},
+	}
+	for _, c := range cases {
+		if _, err := Format(c.in); err != nil {
+			b.Fatalf("%s: %v", c.name, err)
+		}
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(c.in)))
+			for b.Loop() {
+				_, _ = Format(c.in)
+			}
+		})
+	}
+}
+
+// BenchmarkLex runs the lex stage alone on the large file, since Format
+// runs it twice: once on the input and once on its own output.
+func BenchmarkLex(b *testing.B) {
+	src := strings.Repeat(benchFile+"\n", 100)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(src)))
+	for b.Loop() {
+		_, _ = lex(src, len(src)/4+1)
+	}
+}
+
+// BenchmarkFormatError runs Format on input that checkDepth refuses. A
+// caller with untrusted SQL pays this cost for each bad file.
+func BenchmarkFormatError(b *testing.B) {
+	src := "select " + strings.Repeat("(", 100000) + "1;"
+	b.ReportAllocs()
+	b.SetBytes(int64(len(src)))
+	for b.Loop() {
+		_, _ = Format(src)
+	}
+}

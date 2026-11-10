@@ -7,12 +7,14 @@ package pgfmt
 import (
 	"bytes"
 	"fmt"
-	"strings"
 )
 
 // Format formats SQL source per the fixed style.
 func Format(src string) (string, error) {
-	toks, err := lex(src)
+	// The input holds about one token for each 4 bytes. A slice of
+	// that size grows once or not at all, where a slice that grows
+	// from empty copies the tokens many times.
+	toks, err := lex(src, len(src)/4+1)
 	if err != nil {
 		return "", err
 	}
@@ -22,45 +24,49 @@ func Format(src string) (string, error) {
 	}
 	items := buildTree(toks)
 	var b bytes.Buffer
+	b.Grow(len(src) + len(src)/4)
 	pTop(&b, items)
-	out := b.String()
-	if !strings.HasSuffix(out, "\n") {
-		out += "\n"
+	if bs := b.Bytes(); len(bs) == 0 || bs[len(bs)-1] != '\n' {
+		b.WriteByte('\n')
 	}
+	out := b.String()
 
-	outToks, err := lex(out)
+	// The output holds the tokens of the input, so their count sizes
+	// the slice.
+	outToks, err := lex(out, len(toks))
 	if err != nil {
 		return "", fmt.Errorf("pgfmt: lex output: %w", err)
 	}
 	upcaseDDLKeywords(outToks)
 
-	inNonTrivia := nonTriviaToks(toks)
-	outNonTrivia := nonTriviaToks(outToks)
-	if !compareTokens(inNonTrivia, outNonTrivia) {
+	if !sameTokens(toks, outToks) {
 		return "", fmt.Errorf("pgfmt: round-trip token mismatch")
 	}
 
 	return out, nil
 }
 
-func nonTriviaToks(toks []token) []token {
-	var out []token
-	for _, t := range toks {
-		if t.kind != tkComment && t.kind != tkEOF {
-			out = append(out, t)
+// sameTokens reports whether a and b hold the same tokens, with each
+// comment and the EOF token left out. It skips those tokens in place,
+// so it copies neither slice.
+func sameTokens(a, b []token) bool {
+	i, j := 0, 0
+	for {
+		for i < len(a) && isTrivia(a[i]) {
+			i++
 		}
-	}
-	return out
-}
-
-func compareTokens(a, b []token) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].kind != b[i].kind || a[i].val != b[i].val {
+		for j < len(b) && isTrivia(b[j]) {
+			j++
+		}
+		if i == len(a) || j == len(b) {
+			return i == len(a) && j == len(b)
+		}
+		if a[i].kind != b[j].kind || a[i].val != b[j].val {
 			return false
 		}
+		i++
+		j++
 	}
-	return true
 }
+
+func isTrivia(t token) bool { return t.kind == tkComment || t.kind == tkEOF }

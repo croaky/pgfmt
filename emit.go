@@ -29,9 +29,35 @@ func inline(items []item) string {
 	return b.String()
 }
 
+// inlineLen returns len(inline(items)) and builds no string. The
+// fits-on-one-line tests call it at each level of a nested expression,
+// and write the line with writeInline only when it fits.
+func inlineLen(items []item) int {
+	n := 0
+	for i, it := range items {
+		if i > 0 && needSpace(items[i-1], it) {
+			n++
+		}
+		if it.tok != nil {
+			n += len(it.tok.val)
+		} else if it.grp != nil {
+			n += 2 + inlineLen(it.grp.items)
+		}
+	}
+	return n
+}
+
+// writer is what writeInline writes to: the strings.Builder of inline,
+// or the bytes.Buffer of the output.
+type writer interface {
+	*strings.Builder | *bytes.Buffer
+	WriteByte(byte) error
+	WriteString(string) (int, error)
+}
+
 // writeInline writes items on one line into b. A nested group writes
 // into the same b, so each byte is copied once at any depth.
-func writeInline(b *strings.Builder, items []item) {
+func writeInline[W writer](b W, items []item) {
 	for i, it := range items {
 		if i > 0 && needSpace(items[i-1], it) {
 			b.WriteByte(' ')
@@ -93,9 +119,8 @@ func isTxnControlKeyword(v string) bool {
 }
 
 func emitCaseValue(b *bytes.Buffer, items []item, indent int) {
-	s := inline(items)
-	if currentCol(b)+len(s) <= lineLimit && !hasSubquery(items) {
-		b.WriteString(s)
+	if currentCol(b)+inlineLen(items) <= lineLimit && !hasSubquery(items) {
+		writeInline(b, items)
 		return
 	}
 	emitExpr(b, items, indent)
@@ -226,7 +251,7 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 	switch c.keyword {
 	case "SELECT":
 		writeIndent(b, base)
-		b.WriteString(inline(c.head))
+		writeInline(b, c.head)
 		b.WriteByte('\n')
 		emitCommaList(b, c.body, base+2)
 		writeTerminator(b, c.trailer)
@@ -249,7 +274,7 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 		b.WriteString(c.keyword)
 		if len(c.body) > 0 {
 			b.WriteByte(' ')
-			b.WriteString(inline(c.body))
+			writeInline(b, c.body)
 		}
 		b.WriteByte('\n')
 		writeTerminator(b, c.trailer)
@@ -261,7 +286,7 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 		b.WriteString(c.keyword)
 		if len(c.body) > 0 {
 			b.WriteByte(' ')
-			b.WriteString(inline(upperLockOptions(c.body)))
+			writeInline(b, upperLockOptions(c.body))
 		}
 		b.WriteByte('\n')
 		writeTerminator(b, c.trailer)
@@ -282,7 +307,7 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 		writeIndent(b, base)
 		b.WriteString("UPDATE\n")
 		writeIndent(b, base+2)
-		b.WriteString(inline(c.body))
+		writeInline(b, c.body)
 		b.WriteByte('\n')
 		writeTerminator(b, c.trailer)
 	case "DELETE FROM":
@@ -298,13 +323,13 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 		writeIndent(b, base)
 		b.WriteString("DELETE FROM\n")
 		writeIndent(b, base+2)
-		b.WriteString(inline(deleteTarget))
+		writeInline(b, deleteTarget)
 		b.WriteByte('\n')
 		if usingIdx >= 0 {
 			writeIndent(b, base)
 			b.WriteString("USING\n")
 			writeIndent(b, base+2)
-			b.WriteString(inline(usingBody))
+			writeInline(b, usingBody)
 			b.WriteByte('\n')
 		}
 		writeTerminator(b, c.trailer)
@@ -338,13 +363,13 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 		}
 		writeIndent(b, base)
 		if len(c.head) > 0 {
-			b.WriteString(inline(c.head))
+			writeInline(b, c.head)
 		}
 		if len(c.body) > 0 {
 			if len(c.head) > 0 {
 				b.WriteByte(' ')
 			}
-			b.WriteString(inline(c.body))
+			writeInline(b, c.body)
 		}
 		if len(c.head) == 0 && len(c.body) == 0 {
 			b.WriteByte(' ')
@@ -366,7 +391,7 @@ func emitParenSubqueryOperand(b *bytes.Buffer, body []item, base int) {
 	b.WriteByte(')')
 	if len(body) > 1 {
 		b.WriteByte(' ')
-		b.WriteString(inline(body[1:]))
+		writeInline(b, body[1:])
 	}
 	b.WriteByte('\n')
 }
@@ -387,19 +412,20 @@ func emitCommaList(b *bytes.Buffer, items []item, indent int) {
 	}
 }
 
+// splitTopComma splits items on each top-level comma. Each part is a
+// slice of items, capped at its end so an append to it copies rather
+// than writes over the next item. The split helpers below do the same.
 func splitTopComma(items []item) [][]item {
 	var out [][]item
-	var cur []item
-	for _, it := range items {
+	start := 0
+	for i, it := range items {
 		if it.tok != nil && it.tok.val == "," {
-			out = append(out, cur)
-			cur = nil
-			continue
+			out = append(out, items[start:i:i])
+			start = i + 1
 		}
-		cur = append(cur, it)
 	}
-	if len(cur) > 0 {
-		out = append(out, cur)
+	if start < len(items) {
+		out = append(out, items[start:])
 	}
 	return out
 }
@@ -413,8 +439,7 @@ func emitExpr(b *bytes.Buffer, items []item, indent int) {
 		writeIndent(b, indent)
 		items = items[1:]
 	}
-	s := inline(items)
-	fits := currentCol(b)+len(s) <= lineLimit && !hasSubquery(items)
+	fits := currentCol(b)+inlineLen(items) <= lineLimit && !hasSubquery(items)
 	// Long top-level `+` chains (3+ operands) wrap one operand per line so a
 	// trailing CASE doesn't trap the preceding chain in a single inline run.
 	// Skip when AND/OR are present so predicate splitting drives the layout.
@@ -433,18 +458,18 @@ func emitExpr(b *bytes.Buffer, items []item, indent int) {
 	}
 	if cs, ce := findCaseEnd(items); cs >= 0 {
 		if cs > 0 {
-			b.WriteString(inline(items[:cs]))
+			writeInline(b, items[:cs])
 			b.WriteByte(' ')
 		}
 		emitCase(b, items[cs:ce+1], indent)
 		if ce+1 < len(items) {
 			b.WriteByte(' ')
-			b.WriteString(inline(items[ce+1:]))
+			writeInline(b, items[ce+1:])
 		}
 		return
 	}
 	if fits {
-		b.WriteString(s)
+		writeInline(b, items)
 		return
 	}
 	if hasTopAndOr(items) {
@@ -482,17 +507,15 @@ func hasTopArithChain(items []item) bool {
 // attached to its operand.
 func splitArithOps(items []item) []predPart {
 	var out []predPart
-	cur := predPart{}
+	conn, start := "", 0
 	for i, it := range items {
-		if it.tok != nil && it.tok.kind == tkOp && it.tok.val == "+" && i > 0 && len(cur.body) > 0 {
-			out = append(out, cur)
-			cur = predPart{conn: it.tok.val}
-			continue
+		if it.tok != nil && it.tok.kind == tkOp && it.tok.val == "+" && i > 0 && i > start {
+			out = append(out, predPart{conn: conn, body: items[start:i:i]})
+			conn, start = it.tok.val, i+1
 		}
-		cur.body = append(cur.body, it)
 	}
-	if len(cur.body) > 0 {
-		out = append(out, cur)
+	if start < len(items) {
+		out = append(out, predPart{conn: conn, body: items[start:]})
 	}
 	return out
 }
@@ -560,9 +583,10 @@ func emitGroup(b *bytes.Buffer, g *group, indent int) {
 		emitSubqueryWrapped(b, g, indent)
 		return
 	}
-	inlineStr := "(" + inline(g.items) + ")"
-	if currentCol(b)+len(inlineStr) <= lineLimit {
-		b.WriteString(inlineStr)
+	if currentCol(b)+2+inlineLen(g.items) <= lineLimit {
+		b.WriteByte('(')
+		writeInline(b, g.items)
+		b.WriteByte(')')
 		return
 	}
 	switch g.kind {
@@ -710,17 +734,15 @@ type predPart struct {
 
 func splitPredicates(items []item) []predPart {
 	var out []predPart
-	cur := predPart{}
-	for _, it := range items {
+	conn, start := "", 0
+	for i, it := range items {
 		if it.tok != nil && it.tok.kind == tkKeyword && (it.tok.val == "AND" || it.tok.val == "OR") {
-			out = append(out, cur)
-			cur = predPart{conn: it.tok.val}
-			continue
+			out = append(out, predPart{conn: conn, body: items[start:i:i]})
+			conn, start = it.tok.val, i+1
 		}
-		cur.body = append(cur.body, it)
 	}
-	if len(cur.body) > 0 {
-		out = append(out, cur)
+	if start < len(items) {
+		out = append(out, predPart{conn: conn, body: items[start:]})
 	}
 	return out
 }
@@ -741,7 +763,7 @@ func emitFromClause(b *bytes.Buffer, c clause, base int) {
 		b.WriteByte(')')
 		if len(parts[0]) > 1 {
 			b.WriteByte(' ')
-			b.WriteString(inline(parts[0][1:]))
+			writeInline(b, parts[0][1:])
 		}
 		b.WriteByte('\n')
 		writeTerminator(b, c.trailer)
@@ -810,19 +832,17 @@ func partsWithoutLeadingAnd(items []item) []item {
 
 func splitJoinAnd(items []item) [][]item {
 	var out [][]item
-	var cur []item
-	for _, it := range items {
+	start := 0
+	for i, it := range items {
 		if it.isKW("AND") {
-			if len(cur) > 0 {
-				out = append(out, cur)
+			if i > start {
+				out = append(out, items[start:i:i])
 			}
-			cur = nil
-			continue
+			start = i + 1
 		}
-		cur = append(cur, it)
 	}
-	if len(cur) > 0 {
-		out = append(out, cur)
+	if start < len(items) {
+		out = append(out, items[start:])
 	}
 	return out
 }
@@ -832,25 +852,23 @@ func splitJoinAnd(items []item) [][]item {
 // begin with a JOIN keyword chain.
 func splitFromJoins(items []item) [][]item {
 	var out [][]item
-	var cur []item
-	for i := range len(items) {
-		it := items[i]
+	start := 0
+	for i, it := range items {
 		startHere := false
 		if it.isKW("JOIN") {
-			if len(cur) == 0 || !cur[len(cur)-1].isKW("LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS") {
+			if i == start || !items[i-1].isKW("LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS") {
 				startHere = true
 			}
 		} else if it.isKW("LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS") && isJoinAhead(items, i) {
 			startHere = true
 		}
-		if startHere && len(cur) > 0 {
-			out = append(out, cur)
-			cur = nil
+		if startHere && i > start {
+			out = append(out, items[start:i:i])
+			start = i
 		}
-		cur = append(cur, it)
 	}
-	if len(cur) > 0 {
-		out = append(out, cur)
+	if start < len(items) {
+		out = append(out, items[start:])
 	}
 	return out
 }
@@ -908,7 +926,7 @@ func emitOnConflict(b *bytes.Buffer, c clause, base int) {
 			emitPredicateList(b, pred[1:], base+2)
 		} else {
 			writeIndent(b, base+2)
-			b.WriteString(inline(pred))
+			writeInline(b, pred)
 			b.WriteByte('\n')
 		}
 	}
@@ -935,7 +953,7 @@ func emitOnConflict(b *bytes.Buffer, c clause, base int) {
 
 	if len(action) > 0 {
 		writeIndent(b, base)
-		b.WriteString(inline(action))
+		writeInline(b, action)
 		b.WriteByte('\n')
 	}
 	writeTerminator(b, c.trailer)
@@ -949,7 +967,7 @@ func emitInsertInto(b *bytes.Buffer, c clause, base int) {
 	body := c.body
 	if len(body) == 0 || body[0].tok == nil {
 		// Defensive: emit inline rather than panic on unexpected shape.
-		b.WriteString(inline(body))
+		writeInline(b, body)
 		b.WriteByte('\n')
 		writeTerminator(b, c.trailer)
 		return
@@ -960,13 +978,13 @@ func emitInsertInto(b *bytes.Buffer, c clause, base int) {
 		parts := splitTopComma(body[0].grp.items)
 		if len(parts) == 1 {
 			b.WriteString(" (")
-			b.WriteString(inline(parts[0]))
+			writeInline(b, parts[0])
 			b.WriteByte(')')
 		} else {
 			b.WriteString(" (\n")
 			for i, p := range parts {
 				writeIndent(b, base+2)
-				b.WriteString(inline(p))
+				writeInline(b, p)
 				if i < len(parts)-1 {
 					b.WriteByte(',')
 				}
@@ -980,7 +998,7 @@ func emitInsertInto(b *bytes.Buffer, c clause, base int) {
 	b.WriteByte('\n')
 	if len(body) > 0 {
 		writeIndent(b, base)
-		b.WriteString(inline(body))
+		writeInline(b, body)
 		b.WriteByte('\n')
 	}
 	writeTerminator(b, c.trailer)
@@ -1003,7 +1021,7 @@ func emitMergeInto(b *bytes.Buffer, c clause, base int) {
 	writeIndent(b, base)
 	b.WriteString("MERGE INTO\n")
 	writeIndent(b, base+2)
-	b.WriteString(inline(target))
+	writeInline(b, target)
 	b.WriteByte('\n')
 	if len(source) > 0 {
 		writeIndent(b, base)
@@ -1054,7 +1072,7 @@ func emitMergeAction(b *bytes.Buffer, action []item, indent int) {
 		emitMergeInsert(b, action, indent)
 	default:
 		writeIndent(b, indent)
-		b.WriteString(inline(action))
+		writeInline(b, action)
 		b.WriteByte('\n')
 	}
 }
@@ -1075,14 +1093,14 @@ func emitMergeInsert(b *bytes.Buffer, action []item, indent int) {
 	if valuesIdx < 0 {
 		if len(rest) > 0 {
 			b.WriteByte(' ')
-			b.WriteString(inline(rest))
+			writeInline(b, rest)
 		}
 		b.WriteByte('\n')
 		return
 	}
 	if valuesIdx > 0 {
 		b.WriteByte(' ')
-		b.WriteString(inline(rest[:valuesIdx]))
+		writeInline(b, rest[:valuesIdx])
 	}
 	b.WriteByte('\n')
 	writeIndent(b, indent)
@@ -1093,7 +1111,7 @@ func emitMergeInsert(b *bytes.Buffer, action []item, indent int) {
 		emitMergeList(b, vals[0].grp, indent)
 	} else if len(vals) > 0 {
 		b.WriteByte(' ')
-		b.WriteString(inline(vals))
+		writeInline(b, vals)
 	}
 	b.WriteByte('\n')
 }
@@ -1103,7 +1121,7 @@ func emitMergeInsert(b *bytes.Buffer, action []item, indent int) {
 func emitMergeList(b *bytes.Buffer, g *group, indent int) {
 	if len(splitTopComma(g.items)) == 1 {
 		b.WriteByte('(')
-		b.WriteString(inline(g.items))
+		writeInline(b, g.items)
 		b.WriteByte(')')
 		return
 	}
@@ -1120,7 +1138,7 @@ func emitValues(b *bytes.Buffer, c clause, base int) {
 		if tup := splitTopComma(g.items); len(tup) == 1 {
 			writeIndent(b, base+2)
 			b.WriteString("VALUES (")
-			b.WriteString(inline(tup[0]))
+			writeInline(b, tup[0])
 			b.WriteString(")\n")
 			writeTerminator(b, c.trailer)
 			return
@@ -1138,7 +1156,7 @@ func emitValues(b *bytes.Buffer, c clause, base int) {
 		if len(p) == 1 && p[0].grp != nil {
 			emitListWrapped(b, p[0].grp, base)
 		} else {
-			b.WriteString(inline(p))
+			writeInline(b, p)
 		}
 	}
 	b.WriteByte('\n')
@@ -1177,7 +1195,7 @@ func emitWith(b *bytes.Buffer, c clause, base int) {
 
 		if len(body) > 1 && body[0].grp != nil && body[1].isKW("AS") {
 			b.WriteByte('(')
-			b.WriteString(inline(body[0].grp.items))
+			writeInline(b, body[0].grp.items)
 			b.WriteByte(')')
 			body = body[1:]
 		}
@@ -1261,7 +1279,7 @@ func emitCase(b *bytes.Buffer, items []item, indent int) {
 	b.WriteString("CASE")
 	if i > opStart {
 		b.WriteByte(' ')
-		b.WriteString(inline(items[opStart:i]))
+		writeInline(b, items[opStart:i])
 	}
 	b.WriteByte('\n')
 	for i < n {
@@ -1328,14 +1346,13 @@ func nextCaseToken(items []item, i int, stops ...string) int {
 // long ones (AND/OR chain, NOT EXISTS subquery) wrap with continuations at
 // the value column. Subqueries in the condition always force wrap.
 func emitWhenCondition(b *bytes.Buffer, items []item, whenIndent, valueIndent int) {
-	s := inline(items)
-	if currentCol(b)+len(s) <= lineLimit && !hasSubquery(items) {
-		b.WriteString(s)
+	if currentCol(b)+inlineLen(items) <= lineLimit && !hasSubquery(items) {
+		writeInline(b, items)
 		return
 	}
 	parts := splitPredicates(items)
 	if len(parts) == 0 {
-		b.WriteString(s)
+		writeInline(b, items)
 		return
 	}
 	emitExpr(b, parts[0].body, whenIndent)

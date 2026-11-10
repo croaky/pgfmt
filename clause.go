@@ -55,7 +55,6 @@ func splitClauses(items []item) []clause {
 			it := items[i]
 			if it.isTok(";") {
 				c.trailer = ";"
-				i++
 				break
 			}
 			if !keeps(it, sawDo) {
@@ -64,7 +63,14 @@ func splitClauses(items []item) []clause {
 				}
 			}
 			sawDo = sawDo || it.isKW("DO")
-			c.body = append(c.body, it)
+			i++
+		}
+		// The body is the slice of items it read, capped so the append
+		// above to the body of the last clause copies it.
+		if i > after {
+			c.body = items[after:i:i]
+		}
+		if c.trailer != "" {
 			i++
 		}
 		out = append(out, c)
