@@ -55,6 +55,11 @@ a form an older server rejects: the underscore separator of `1_000_000`
 and the radix prefixes of `0x1f`, `0o777`, and `0b1010` all arrived in
 Postgres 16.
 
+pgfmt reads a plain `'...'` string with `standard_conforming_strings`
+on, the Postgres default since 9.1. With the setting off, a backslash
+before a quote ends a string at a different byte. Do not format SQL
+for a server with the setting off.
+
 ## Correctness
 
 `Format` lexes its own output and compares the token stream to the
@@ -66,6 +71,13 @@ That check cannot see a token the lexer split, since both halves survive
 the trip. So the lexer refuses instead where a split would hide: a
 letter against the end of a number, such as `1e`, is an error, and
 Postgres rejects the same input.
+
+The check also cannot see a token that ends at a different byte than
+in Postgres. So the lexer ends each token where Postgres does. A name
+continues through `$`, so `like$1` is one name. In an `E'...'` string,
+a backslash escapes the next byte. Block comments nest. A `--` comment
+ends at CR or LF. Postgres joins two strings that a newline separates,
+and pgfmt refuses that form with an error.
 
 ## GitHub repo is a mirror
 

@@ -142,12 +142,15 @@ func lex(src string) ([]token, error) {
 	blanks := 0
 	for i < n {
 		ch := src[i]
-		if ch == ' ' || ch == '\t' || ch == '\r' {
+		if ch == ' ' || ch == '\t' {
 			i++
 			continue
 		}
-		if ch == '\n' {
-			blanks++
+		// Postgres ends a line at CR or LF. CR LF is one line break.
+		if ch == '\n' || ch == '\r' {
+			if ch == '\n' || i+1 >= n || src[i+1] != '\n' {
+				blanks++
+			}
 			i++
 			continue
 		}
@@ -160,10 +163,7 @@ func lex(src string) ([]token, error) {
 		// comments (those that start on their own line) pass through
 		// and are emitted by pTop before the following statement.
 		if ch == '-' && i+1 < n && src[i+1] == '-' {
-			j := i + 2
-			for j < n && src[j] != '\n' {
-				j++
-			}
+			j := lineEnd(src, i+2)
 			if blanks > 0 || len(toks) == 0 {
 				toks = append(toks, token{kind: tkComment, val: src[i:j], blanksBefore: blanks})
 			}
@@ -173,13 +173,25 @@ func lex(src string) ([]token, error) {
 		}
 		// Block comment: /* ... */. May span multiple lines; internal
 		// newlines do not affect blanksBefore on the next token.
+		//
+		// Block comments nest, as in Postgres: the comment ends at the
+		// `*/` that brings the depth back to zero. A scan that stopped at
+		// the first `*/` read the rest of the comment as code.
 		if ch == '/' && i+1 < n && src[i+1] == '*' {
-			j, closed := i+2, false
+			j, depth, closed := i+2, 1, false
 			for j+1 < n {
+				if src[j] == '/' && src[j+1] == '*' {
+					depth++
+					j += 2
+					continue
+				}
 				if src[j] == '*' && src[j+1] == '/' {
 					j += 2
-					closed = true
-					break
+					if depth--; depth == 0 {
+						closed = true
+						break
+					}
+					continue
 				}
 				j++
 			}
@@ -191,10 +203,15 @@ func lex(src string) ([]token, error) {
 			i = j
 			continue
 		}
-		// String literal: 'foo' with '' as escape for literal '.
+		// Escape string: E'foo'. A backslash escapes the next byte, so
+		// `\'` never ends the string and never pairs with a quote.
 		if (ch == 'e' || ch == 'E') && i+1 < n && src[i+1] == '\'' {
 			j, closed := i+2, false
 			for j < n {
+				if src[j] == '\\' {
+					j += 2
+					continue
+				}
 				if src[j] != '\'' {
 					j++
 					continue
@@ -209,6 +226,9 @@ func lex(src string) ([]token, error) {
 			}
 			if !closed {
 				return nil, fmt.Errorf("pgfmt: unterminated string literal at offset %d", i)
+			}
+			if continuesString(src, j) {
+				return nil, fmt.Errorf("pgfmt: string literal continued on a new line at offset %d", i)
 			}
 			toks = append(toks, token{kind: tkString, val: "E" + src[i+1:j], blanksBefore: blanks})
 			blanks = 0
@@ -233,6 +253,9 @@ func lex(src string) ([]token, error) {
 			}
 			if !closed {
 				return nil, fmt.Errorf("pgfmt: unterminated string literal at offset %d", i)
+			}
+			if continuesString(src, j) {
+				return nil, fmt.Errorf("pgfmt: string literal continued on a new line at offset %d", i)
 			}
 			toks = append(toks, token{kind: tkString, val: src[i:j], blanksBefore: blanks})
 			blanks = 0
@@ -283,10 +306,12 @@ func lex(src string) ([]token, error) {
 			i = j
 			continue
 		}
-		// Identifier or keyword.
+		// Identifier or keyword. Postgres continues an identifier
+		// through `$`, so `like$t$` is one name. A scan that stopped at
+		// `$` read a keyword and then a dollar quote or a parameter.
 		if isIdentStart(ch) {
 			j := i
-			for j < n && isIdentCont(src[j]) {
+			for j < n && (isIdentCont(src[j]) || src[j] == '$') {
 				j++
 			}
 			lc := strings.ToLower(src[i:j])
@@ -402,6 +427,40 @@ func runOfDigits(src string, i int, digits string) int {
 		break
 	}
 	return j
+}
+
+// lineEnd returns the offset of the CR or LF that ends the line at i,
+// or the end of src. Postgres ends a line comment at either byte.
+func lineEnd(src string, i int) int {
+	for i < len(src) && src[i] != '\n' && src[i] != '\r' {
+		i++
+	}
+	return i
+}
+
+// continuesString reports whether the string literal that ends at j
+// goes on in a second quoted segment. Postgres joins two segments that
+// only whitespace with a newline separates. It reads the second by the
+// rules of the first, so an E” rule reaches into a segment that looks
+// plain. pgfmt refuses the form, because a printer that put the
+// segments on one line would change the SQL. It also refuses a line
+// comment between the segments, which Postgres rejects.
+func continuesString(src string, j int) bool {
+	newline := false
+	for j < len(src) {
+		switch {
+		case src[j] == ' ' || src[j] == '\t':
+			j++
+		case src[j] == '\n' || src[j] == '\r':
+			newline = true
+			j++
+		case strings.HasPrefix(src[j:], "--"):
+			j = lineEnd(src, j)
+		default:
+			return newline && src[j] == '\''
+		}
+	}
+	return false
 }
 
 func isDigit(ch byte) bool { return ch >= '0' && ch <= '9' }

@@ -711,6 +711,69 @@ func TestFormat(t *testing.T) {
 			want: "",
 		},
 		{
+			// Postgres continues an identifier through `$`. A lexer that
+			// stopped at `$` read `$t$` as a dollar quote, which hid the
+			// text up to the next `$t$` in a string, here a comment.
+			name: "$ inside an identifier does not open a dollar quote",
+			in:   "select 1 as x$t$; -- $t$; drop table t;",
+			want: "SELECT\n  1 AS x$t$;\n",
+		},
+		{
+			name: "$1 against a word is one identifier",
+			in:   "select like$1 from t;",
+			want: "SELECT\n  like$1\nFROM\n  t;\n",
+		},
+		{
+			// In an E'' string a backslash escapes the next byte, so
+			// `\'` does not pair with the closing quote. A lexer that read
+			// `''` there ran the string into the comment, and printed the
+			// comment text as statements.
+			name: "backslash escapes a quote in an E'' string",
+			in:   "select E'\\'' as x; -- ' ; drop table t;",
+			want: "SELECT\n  E'\\'' AS x;\n",
+		},
+		{
+			name: "block comments nest",
+			in:   "/* a /* b */ c */\nselect 1;",
+			want: "/* a /* b */ c */\nSELECT\n  1;\n",
+		},
+		{
+			name: "nested block comment left open is an error",
+			in:   "/* /* */\nselect 1;",
+			want: "",
+		},
+		{
+			// Postgres ends a line comment at CR as well as LF. A lexer
+			// that read on to LF dropped the statement after the CR
+			// with the trailing comment.
+			name: "bare CR ends a line comment",
+			in:   "select 1; -- x\rselect 2;",
+			want: "SELECT\n  1;\nSELECT\n  2;\n",
+		},
+		{
+			name: "block comment after a bare CR stays a comment",
+			in:   "select 1; -- x\r/* select 2; */\nselect 3;",
+			want: "SELECT\n  1;\n/* select 2; */\nSELECT\n  3;\n",
+		},
+		{
+			name: "CR LF counts as one line break",
+			in:   "select 1; -- x\r\nselect 2;",
+			want: "SELECT\n  1;\nSELECT\n  2;\n",
+		},
+		{
+			// Postgres joins two strings that a newline separates, and
+			// reads the second by the rules of the first. pgfmt refuses
+			// the form rather than print the segments apart.
+			name: "string continued on the next line is an error",
+			in:   "select 'a'\n'b';",
+			want: "",
+		},
+		{
+			name: "string continued after a line comment is an error",
+			in:   "select E'a' -- c\n'\\'';",
+			want: "",
+		},
+		{
 			name: "long + chain with trailing CASE wraps one operand per line",
 			in: "" +
 				"select (coalesce(a.s, 0) + coalesce(b.s, 0) + coalesce(c.s, 0) " +
