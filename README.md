@@ -81,19 +81,20 @@ and pgfmt refuses that form with an error.
 
 An operator is the longest run of operator characters, so `<<` and
 `<->` stay whole. A run that ends in `+` or `-` loses that tail, as in
-Postgres, unless it holds one of ``~ ! @ # ^ & | ` ? %``. A prefix
-against a quote is part of the string: `B'101'`, `X'1F'`, `N'abc'`,
-`E'a'`, and `U&'a'` each stay one literal, with the prefix in
-uppercase.
+Postgres, unless it holds one of ``~ ! @ # ^ & | ` ? %``. Each byte of
+the tail is then one operator. A prefix against a quote is part of the
+string: `B'101'`, `X'1F'`, `N'abc'`, `E'a'`, and `U&'a'` each stay one
+literal, with the prefix in uppercase.
 
 ## Limits
 
 pgfmt refuses a `(` that never closes and a `)` with no `(`, as
 Postgres does. It also refuses parens and `CASE` that nest deeper than
-100 levels. Each level costs stack, a deeper indent on each line, and
-one more pass to measure the line. The limit keeps the output, memory,
-and time of `Format` in proportion to the input, whatever the input.
-Hand-written queries nest far less deep.
+100 levels. An `END` closes only a `CASE` inside the same parens. Each
+level costs stack, a deeper indent on each line, and one more pass to
+measure the line. The limit keeps the output, memory, and time of
+`Format` in proportion to the input, whatever the input. Hand-written
+queries nest far less deep.
 
 ## GitHub repo is a mirror
 

@@ -1,8 +1,10 @@
 package pgfmt
 
 import (
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/croaky/is"
 )
@@ -1100,6 +1102,12 @@ func TestFormat(t *testing.T) {
 			in:   "select " + strings.Repeat("case when x then ", 10000) + "1" + strings.Repeat(" end", 10000) + ";",
 		},
 		{
+			// An END in parens closes no CASE outside them, so each
+			// CASE here nests in the THEN of the one before it.
+			name: "CASE with END in parens past the depth limit is an error",
+			in:   "select " + strings.Repeat("case when (end) then ", maxDepth+1) + "1" + strings.Repeat(" end", maxDepth+1) + ";",
+		},
+		{
 			// END also ends a transaction, outside any CASE.
 			name: "END as a statement keeps formatting",
 			in:   "begin; select 1; end;",
@@ -1117,6 +1125,32 @@ func TestFormat(t *testing.T) {
 			is.NoErr(err)
 			is.Eq(got, tt.want)
 		})
+	}
+}
+
+// TestLexOperatorRunTime checks that lex reads a long run of + in time
+// linear in its length. Postgres reads such a run as one + for each
+// byte. A lex that scans the rest of the run for each byte takes 64
+// times as long on a run 8 times as long, and fails here.
+func TestLexOperatorRunTime(t *testing.T) {
+	is := is.New(t)
+	run := func(n int) time.Duration {
+		src := "select 1 " + strings.Repeat("+", n) + " 1;"
+		best := time.Duration(math.MaxInt64)
+		for range 3 {
+			start := time.Now()
+			toks, err := lex(src, n+8)
+			best = min(best, time.Since(start))
+			is.NoErr(err)
+			is.Eq(len(toks), n+5)
+			is.Eq(toks[2].val, "+")
+			is.Eq(toks[n+1].val, "+")
+		}
+		return best
+	}
+	small, large := run(10000), run(80000)
+	if large > 24*small {
+		t.Fatalf("lex took %v on 80,000 + and %v on 10,000: more than linear", large, small)
 	}
 }
 

@@ -68,23 +68,41 @@ const maxDepth = 100
 
 // checkDepth returns an error if parens do not balance, as Postgres
 // does, or if parens and CASE together nest deeper than maxDepth. It
-// reads the tokens once, before buildTree recurses. END lowers the CASE
-// count only inside a CASE, because END is also a statement.
+// reads the tokens once, before buildTree recurses.
+//
+// It counts CASE for each paren level, as findCaseEnd and nextCaseToken
+// pair CASE with END. An END lowers the count of its own level only,
+// and only when that count is above zero, because END is also a
+// statement. A ) drops the count of the level it closes. With one count
+// for all levels, CASE WHEN (END) THEN CASE ... let each END in parens
+// cancel a CASE that the emit stage still nests in.
 func checkDepth(toks []token) error {
-	parens, cases := 0, 0
+	// cases is the open CASE count over all levels, level is the count
+	// of the current level, and outer holds the count of each outer
+	// level. outer holds at most maxDepth+1 counts, because the check
+	// below refuses more parens than that.
+	parens, cases, level := 0, 0, 0
+	var outer []int
 	for _, t := range toks {
 		switch {
 		case t.kind == tkPunct && t.val == "(":
 			parens++
+			outer = append(outer, level)
+			level = 0
 		case t.kind == tkPunct && t.val == ")":
 			if parens == 0 {
 				return errors.New("pgfmt: ) without (")
 			}
 			parens--
+			cases -= level
+			level = outer[len(outer)-1]
+			outer = outer[:len(outer)-1]
 		case t.kind == tkKeyword && t.val == "CASE":
 			cases++
-		case t.kind == tkKeyword && t.val == "END" && cases > 0:
+			level++
+		case t.kind == tkKeyword && t.val == "END" && level > 0:
 			cases--
+			level--
 		}
 		if parens+cases > maxDepth {
 			return fmt.Errorf("pgfmt: parens and CASE nest deeper than %d", maxDepth)

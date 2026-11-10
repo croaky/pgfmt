@@ -310,10 +310,15 @@ func lex(src string, want int) ([]token, error) {
 			continue
 		}
 		// Operators.
-		if op, ok := matchOp(src, i); ok {
+		if op, end := matchOp(src, i); op != "" {
 			toks = append(toks, token{kind: tkOp, val: op, blanksBefore: blanks})
 			blanks = 0
-			i += len(op)
+			// Each byte of the + and - tail that matchOp cut off is
+			// one operator. Reading the tail here, and not with one
+			// call of matchOp for each byte, keeps lex linear.
+			for i += len(op); i < end; i++ {
+				toks = append(toks, token{kind: tkOp, val: src[i : i+1]})
+			}
 			continue
 		}
 		return nil, fmt.Errorf("pgfmt: unexpected character %q at offset %d", ch, i)
@@ -510,20 +515,28 @@ func quoteEnd(src string, j int, prefix byte) (int, bool) {
 const opChars = "~!@#^&|`?+-*/%<>="
 
 // matchOp returns the operator that starts at i, by the rules of the
-// Postgres lexer (scan.l). An operator is the longest run of opChars,
-// cut before a `--` or `/*` inside it. A run of two or more that ends
-// in `+` or `-` loses that tail, unless it holds one of ~ ! @ # ^ & |
-// ` ? %. So `=-1` is `=` then `-1`, and `!=-1` is `!=-` then `1`.
+// Postgres lexer (scan.l), and the offset one past the run it read. It
+// returns "" when no operator starts at i. An operator is the longest
+// run of opChars, cut before a `--` or `/*` inside it. A run of two or
+// more that ends in `+` or `-` loses that tail, unless it holds one of
+// ~ ! @ # ^ & | ` ? %. So `=-1` is `=` then `-1`, and `!=-1` is `!=-`
+// then `1`.
+//
+// Postgres reads each byte of a cut tail as one operator: the rest of
+// the run holds only + and - and none of the bytes above. The caller
+// reads the tail from the offset. A caller that calls matchOp again
+// for each byte of the tail scans the run again each time, and takes
+// time quadratic in the run length.
 //
 // A table of known operators took a prefix of the run, so `<<` came
 // apart as `<` and `<`. The printer put a space between them, and
 // Postgres read two operators.
-func matchOp(src string, i int) (string, bool) {
+func matchOp(src string, i int) (string, int) {
 	if strings.HasPrefix(src[i:], "::") {
-		return "::", true
+		return "::", i + 2
 	}
 	if src[i] == '.' {
-		return ".", true
+		return ".", i + 1
 	}
 	j := i
 	for j < len(src) && strings.IndexByte(opChars, src[j]) >= 0 {
@@ -535,10 +548,11 @@ func matchOp(src string, i int) (string, bool) {
 			op = op[:k]
 		}
 	}
+	end := i + len(op)
 	if !strings.ContainsAny(op, "~!@#^&|`?%") {
 		for len(op) > 1 && (op[len(op)-1] == '+' || op[len(op)-1] == '-') {
 			op = op[:len(op)-1]
 		}
 	}
-	return op, op != ""
+	return op, end
 }
