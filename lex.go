@@ -124,18 +124,6 @@ func upcaseDDLKeywords(toks []token) {
 	}
 }
 
-// operators ordered by length (longest first) for correct longest-match.
-//
-// `@@` matches a tsvector against a tsquery. A formatter that refused
-// it sent the author to `ts_match_vq(v, q)`, the function the operator
-// calls, which reads the same and plans differently: an index matches
-// an operator, so the function form costs a sequential scan.
-var operators = []string{
-	"->>", "!~*",
-	"=>", "<>", "<=", ">=", "!=", "->", "~*", "!~", "::", "||", "&&", "@@", "@>", "<@",
-	"<", ">", "=", "+", "-", "*", "/", "%", ".", "~", "?",
-}
-
 func lex(src string) ([]token, error) {
 	var toks []token
 	i, n := 0, len(src)
@@ -203,61 +191,20 @@ func lex(src string) ([]token, error) {
 			i = j
 			continue
 		}
-		// Escape string: E'foo'. A backslash escapes the next byte, so
-		// `\'` never ends the string and never pairs with a quote.
-		if (ch == 'e' || ch == 'E') && i+1 < n && src[i+1] == '\'' {
-			j, closed := i+2, false
-			for j < n {
-				if src[j] == '\\' {
-					j += 2
-					continue
-				}
-				if src[j] != '\'' {
-					j++
-					continue
-				}
-				if j+1 < n && src[j+1] == '\'' {
-					j += 2
-					continue
-				}
-				j++
-				closed = true
-				break
-			}
+		// String literal: 'foo', or one with a prefix against the quote:
+		// E'foo', B'101', X'1F', N'foo', or U&'foo'. The prefix is part
+		// of the literal. A scan that read it as a name printed X'1F' as
+		// `x '1F'`, which Postgres reads as a typed literal.
+		if p := stringPrefix(src, i); p >= 0 {
+			q := i + p
+			j, closed := quoteEnd(src, q+1, strings.ToLower(src[i:q]))
 			if !closed {
 				return nil, fmt.Errorf("pgfmt: unterminated string literal at offset %d", i)
 			}
 			if continuesString(src, j) {
 				return nil, fmt.Errorf("pgfmt: string literal continued on a new line at offset %d", i)
 			}
-			toks = append(toks, token{kind: tkString, val: "E" + src[i+1:j], blanksBefore: blanks})
-			blanks = 0
-			i = j
-			continue
-		}
-		// String literal: 'foo' with '' as escape for literal '.
-		if ch == '\'' {
-			j, closed := i+1, false
-			for j < n {
-				if src[j] != '\'' {
-					j++
-					continue
-				}
-				if j+1 < n && src[j+1] == '\'' {
-					j += 2
-					continue
-				}
-				j++
-				closed = true
-				break
-			}
-			if !closed {
-				return nil, fmt.Errorf("pgfmt: unterminated string literal at offset %d", i)
-			}
-			if continuesString(src, j) {
-				return nil, fmt.Errorf("pgfmt: string literal continued on a new line at offset %d", i)
-			}
-			toks = append(toks, token{kind: tkString, val: src[i:j], blanksBefore: blanks})
+			toks = append(toks, token{kind: tkString, val: strings.ToUpper(src[i:q]) + src[q:j], blanksBefore: blanks})
 			blanks = 0
 			i = j
 			continue
@@ -441,8 +388,8 @@ func lineEnd(src string, i int) int {
 // continuesString reports whether the string literal that ends at j
 // goes on in a second quoted segment. Postgres joins two segments that
 // only whitespace with a newline separates. It reads the second by the
-// rules of the first, so an E” rule reaches into a segment that looks
-// plain. pgfmt refuses the form, because a printer that put the
+// rules of the first, so an E-string rule reaches into a segment that
+// looks plain. pgfmt refuses the form, because a printer that put the
 // segments on one line would change the SQL. It also refuses a line
 // comment between the segments, which Postgres rejects.
 func continuesString(src string, j int) bool {
@@ -488,11 +435,79 @@ func dollarTag(src string, i int) (string, bool) {
 	return src[i : j+1], true
 }
 
-func matchOp(src string, i int) (string, bool) {
-	for _, op := range operators {
-		if strings.HasPrefix(src[i:], op) {
-			return op, true
+// stringPrefix returns the length of the prefix of a string literal
+// that starts at i: 0 for 'foo', 1 for E'foo', B'101', X'1F', and
+// N'foo', and 2 for U&'foo'. It returns -1 when no string literal
+// starts at i.
+func stringPrefix(src string, i int) int {
+	switch {
+	case src[i] == '\'':
+		return 0
+	case i+1 < len(src) && src[i+1] == '\'' && strings.IndexByte("eEbBxXnN", src[i]) >= 0:
+		return 1
+	case i+2 < len(src) && (src[i] == 'u' || src[i] == 'U') && src[i+1] == '&' && src[i+2] == '\'':
+		return 2
+	}
+	return -1
+}
+
+// quoteEnd returns the offset one past the quote that ends a string
+// literal whose body starts at j, and whether that quote exists. The
+// prefix sets the rules, as in Postgres. In an E string, a backslash
+// escapes the next byte, so `\'` never ends the string. A B or X
+// string ends at the first quote. The others read a doubled quote as
+// one quote.
+func quoteEnd(src string, j int, prefix string) (int, bool) {
+	doubled := prefix != "b" && prefix != "x"
+	for j < len(src) {
+		switch {
+		case src[j] == '\\' && prefix == "e":
+			j += 2
+		case src[j] != '\'':
+			j++
+		case doubled && j+1 < len(src) && src[j+1] == '\'':
+			j += 2
+		default:
+			return j + 1, true
 		}
 	}
-	return "", false
+	return j, false
+}
+
+// opChars are the bytes that Postgres reads as one operator when they
+// run together.
+const opChars = "~!@#^&|`?+-*/%<>="
+
+// matchOp returns the operator that starts at i, by the rules of the
+// Postgres lexer (scan.l). An operator is the longest run of opChars,
+// cut before a `--` or `/*` inside it. A run of two or more that ends
+// in `+` or `-` loses that tail, unless it holds one of ~ ! @ # ^ & |
+// ` ? %. So `=-1` is `=` then `-1`, and `!=-1` is `!=-` then `1`.
+//
+// A table of known operators took a prefix of the run, so `<<` came
+// apart as `<` and `<`. The printer put a space between them, and
+// Postgres read two operators.
+func matchOp(src string, i int) (string, bool) {
+	if strings.HasPrefix(src[i:], "::") {
+		return "::", true
+	}
+	if src[i] == '.' {
+		return ".", true
+	}
+	j := i
+	for j < len(src) && strings.IndexByte(opChars, src[j]) >= 0 {
+		j++
+	}
+	op := src[i:j]
+	for _, c := range []string{"--", "/*"} {
+		if k := strings.Index(op, c); k >= 0 {
+			op = op[:k]
+		}
+	}
+	if !strings.ContainsAny(op, "~!@#^&|`?%") {
+		for len(op) > 1 && (op[len(op)-1] == '+' || op[len(op)-1] == '-') {
+			op = op[:len(op)-1]
+		}
+	}
+	return op, op != ""
 }

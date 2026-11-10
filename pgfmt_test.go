@@ -734,6 +734,70 @@ func TestFormat(t *testing.T) {
 			want: "",
 		},
 		{
+			// Postgres reads the whole run of operator characters as
+			// one operator. A lexer that took a table prefix printed
+			// `a << 2` as `a < < 2`, which is two operators.
+			name: "compound operators stay whole",
+			in:   "select a << 2, a <<= b, a <-> b, a ~~ b, a !~~ b, j #>> '{a}', @ x from t;",
+			want: "" +
+				"SELECT\n" +
+				"  a << 2,\n" +
+				"  a <<= b,\n" +
+				"  a <-> b,\n" +
+				"  a ~~ b,\n" +
+				"  a !~~ b,\n" +
+				"  j #>> '{a}',\n" +
+				"  @ x\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
+			// A run that ends in + or - loses that tail, unless it holds
+			// one of ~ ! @ # ^ & | ` ? %. So `=-1` is `=` and `-1`, but
+			// `!=-1` is the operator `!=-` and `1`.
+			name: "trailing + and - follow the Postgres rule",
+			in:   "select a !=-1, x - -1, x <- 1, a=-1 from t;",
+			want: "" +
+				"SELECT\n" +
+				"  a !=- 1,\n" +
+				"  x - - 1,\n" +
+				"  x < - 1,\n" +
+				"  a = - 1\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
+			name: "an operator run ends at a line comment",
+			in:   "select a +-- c\n b from t;",
+			want: "SELECT\n  a + b\nFROM\n  t;\n",
+		},
+		{
+			// A prefix letter against a quote is part of the literal.
+			// A lexer that read it as a name printed `X'1F'` as
+			// `x '1F'`, which Postgres reads as a typed literal.
+			name: "prefixed string literals stay whole",
+			in:   "select b'101', X'1F', n'abc', u&'d\\0061t', e'a' from t;",
+			want: "" +
+				"SELECT\n" +
+				"  B'101',\n" +
+				"  X'1F',\n" +
+				"  N'abc',\n" +
+				"  U&'d\\0061t',\n" +
+				"  E'a'\n" +
+				"FROM\n" +
+				"  t;\n",
+		},
+		{
+			name: "a name that ends in a prefix letter is still a name",
+			in:   "select ax'1' from t;",
+			want: "SELECT\n  ax '1'\nFROM\n  t;\n",
+		},
+		{
+			name: "prefixed string continued on the next line is an error",
+			in:   "select X'1F'\n'2';",
+			want: "",
+		},
+		{
 			// Postgres continues an identifier through `$`. A lexer that
 			// stopped at `$` read `$t$` as a dollar quote, which hid the
 			// text up to the next `$t$` in a string, here a comment.

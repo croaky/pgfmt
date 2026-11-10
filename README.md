@@ -79,6 +79,13 @@ a backslash escapes the next byte. Block comments nest. A `--` comment
 ends at CR or LF. Postgres joins two strings that a newline separates,
 and pgfmt refuses that form with an error.
 
+An operator is the longest run of operator characters, so `<<` and
+`<->` stay whole. A run that ends in `+` or `-` loses that tail, as in
+Postgres, unless it holds one of ``~ ! @ # ^ & | ` ? %``. A prefix
+against a quote is part of the string: `B'101'`, `X'1F'`, `N'abc'`,
+`E'a'`, and `U&'a'` each stay one literal, with the prefix in
+uppercase.
+
 ## Limits
 
 pgfmt refuses a `(` that never closes and a `)` with no `(`, as
