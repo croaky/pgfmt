@@ -528,6 +528,11 @@ const opChars = "~!@#^&|`?+-*/%<>="
 // for each byte of the tail scans the run again each time, and takes
 // time quadratic in the run length.
 //
+// The scan stops at the first `--` or `/*`. `/` and `*` are opChars,
+// so a run can continue after an empty comment. A scan that read the
+// full run and then cut it read the same bytes again on each call, so
+// `+/**/` repeated took time quadratic in its length.
+//
 // A table of known operators took a prefix of the run, so `<<` came
 // apart as `<` and `<`. The printer put a space between them, and
 // Postgres read two operators.
@@ -540,15 +545,12 @@ func matchOp(src string, i int) (string, int) {
 	}
 	j := i
 	for j < len(src) && strings.IndexByte(opChars, src[j]) >= 0 {
+		if j+1 < len(src) && (src[j] == '-' && src[j+1] == '-' || src[j] == '/' && src[j+1] == '*') {
+			break
+		}
 		j++
 	}
-	op := src[i:j]
-	for _, c := range []string{"--", "/*"} {
-		if k := strings.Index(op, c); k >= 0 {
-			op = op[:k]
-		}
-	}
-	end := i + len(op)
+	op, end := src[i:j], j
 	if !strings.ContainsAny(op, "~!@#^&|`?%") {
 		for len(op) > 1 && (op[len(op)-1] == '+' || op[len(op)-1] == '-') {
 			op = op[:len(op)-1]

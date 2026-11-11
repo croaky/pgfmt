@@ -1128,29 +1128,42 @@ func TestFormat(t *testing.T) {
 	}
 }
 
-// TestLexOperatorRunTime checks that lex reads a long run of + in time
-// linear in its length. Postgres reads such a run as one + for each
-// byte. A lex that scans the rest of the run for each byte takes 64
-// times as long on a run 8 times as long, and fails here.
+// TestLexOperatorRunTime checks that lex reads a long run of operator
+// bytes in time linear in its length. Postgres reads a run of + as one
+// + for each byte. In a run of + and empty block comments, each /*
+// cuts the operator. A lex that scans the rest of the run for each
+// token takes 64 times as long on a run 8 times as long, and fails here.
 func TestLexOperatorRunTime(t *testing.T) {
-	is := is.New(t)
-	run := func(n int) time.Duration {
-		src := "select 1 " + strings.Repeat("+", n) + " 1;"
-		best := time.Duration(math.MaxInt64)
-		for range 3 {
-			start := time.Now()
-			toks, err := lex(src, n+8)
-			best = min(best, time.Since(start))
-			is.NoErr(err)
-			is.Eq(len(toks), n+5)
-			is.Eq(toks[2].val, "+")
-			is.Eq(toks[n+1].val, "+")
-		}
-		return best
-	}
-	small, large := run(10000), run(80000)
-	if large > 24*small {
-		t.Fatalf("lex took %v on 80,000 + and %v on 10,000: more than linear", large, small)
+	for _, tt := range []struct {
+		unit string
+		toks int    // tokens in one unit
+		last string // the last token of one unit
+	}{
+		{"+", 1, "+"},
+		{"+/**/", 2, "/**/"},
+	} {
+		t.Run(tt.unit, func(t *testing.T) {
+			is := is.New(t)
+			run := func(n int) time.Duration {
+				src := "select 1 " + strings.Repeat(tt.unit, n) + " 1;"
+				best := time.Duration(math.MaxInt64)
+				for range 3 {
+					start := time.Now()
+					toks, err := lex(src, tt.toks*n+8)
+					best = min(best, time.Since(start))
+					is.NoErr(err)
+					is.Eq(len(toks), tt.toks*n+5)
+					is.Eq(toks[2].val, "+")
+					is.Eq(toks[tt.toks*n+1].val, tt.last)
+					is.Eq(toks[tt.toks*n+2].val, "1")
+				}
+				return best
+			}
+			small, large := run(10000), run(80000)
+			if large > 24*small {
+				t.Fatalf("lex took %v on 80,000 %q and %v on 10,000: more than linear", large, tt.unit, small)
+			}
+		})
 	}
 }
 
