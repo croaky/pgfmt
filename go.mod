@@ -7,4 +7,4 @@ go 1.27.3
 // stop a resolver from choosing it.
 retract v0.1.0
 
-require github.com/croaky/is v0.2.0
+require github.com/croaky/is v0.2.2
