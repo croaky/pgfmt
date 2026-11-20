@@ -19,8 +19,8 @@ lint: out=$(go tool -modfile=tools.mod goimports -local "$(go list -m)" -l .); i
 # gopls at hint severity is what an editor underlines and nobody
 # reading a diff sees. It exits 0 whether or not it found anything, so
 # its output is the verdict: awk prints what it read, then fails if it
-# read a line.
-hints: git ls-files -z '*.go' | xargs -0 gopls check -severity=hint | awk '1; END { exit (NR > 0) }'
+# read a line. oracle/ is a separate module checked by the oracle job.
+hints: git ls-files -z '*.go' ':!oracle/*' | xargs -0 gopls check -severity=hint | awk '1; END { exit (NR > 0) }'
 
 # The unreachable half of a printer. deadcode reads the whole module,
 # so a function cmd/pgfmt still reaches stays live, and what it reports
@@ -48,6 +48,14 @@ shellcheck: git ls-files -z '*.sh' 'scripts/*' | xargs -0 shellcheck
 # the versions this module ships. It reads the live vulnerability
 # database, so a new advisory fails this check without a commit.
 weekly_govulncheck: go tool -modfile=tools.mod govulncheck ./...
+
+# Compare Format's input and output through the Postgres 17 C scanner
+# in oracle/ (a separate Go module so cgo stays out of pgfmt's module
+# graph; tools.mod also requires pg_query_go so the runner prefetches
+# it into the read-only module cache). Push runs the seed corpus;
+# weekly fuzzes against main.
+oracle: cd oracle && go vet ./... && go test -trimpath -buildvcs=false ./...
+weekly_oracle: cd oracle && go test -fuzz=FuzzOracle -fuzztime=30s .
 
 # The title a change needs to merge, and the body rules that come
 # with it. sockeye reads this from main at merge.
