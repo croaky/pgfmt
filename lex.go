@@ -170,6 +170,8 @@ func lex(src string, want int) ([]token, error) {
 			j := lineEnd(src, i+2)
 			if blanks > 0 || len(toks) == 0 {
 				toks = append(toks, token{kind: tkComment, val: src[i:j], blanksBefore: blanks})
+			} else if commentHasDelimiter(src[i+2 : j]) {
+				return nil, fmt.Errorf("pgfmt: trailing comment at offset %d holds a quote or delimiter; move it to its own line above the statement", i)
 			}
 			blanks = 0
 			i = j
@@ -419,6 +421,27 @@ func lineEnd(src string, i int) int {
 		i++
 	}
 	return i
+}
+
+// commentHasDelimiter reports whether a comment body holds a byte or
+// pair that can start or end a token under another reading. Dropping
+// such a comment silently would hide SQL if lex disagreed with
+// Postgres.
+func commentHasDelimiter(body string) bool {
+	return strings.ContainsAny(body, "'\"$\\") ||
+		strings.Contains(body, "/*") ||
+		strings.Contains(body, "*/")
+}
+
+// commentBody returns the interior of a `--` or `/* ... */` comment.
+func commentBody(val string) string {
+	if strings.HasPrefix(val, "/*") && len(val) >= 4 {
+		return val[2 : len(val)-2]
+	}
+	if strings.HasPrefix(val, "--") {
+		return val[2:]
+	}
+	return val
 }
 
 // continuesString reports whether the string literal that ends at j

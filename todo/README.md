@@ -12,10 +12,9 @@ Claude Security scans the pgfmt project
 attack path and the fix criteria of a finding. Match a finding to its
 plan by its ID, not by its title. Claude Security can change a title.
 
-No finding is open. [006](006-refuse-dropped-comments-with-quotes.md)
-and [007](007-check-lex-against-postgres.md) fix no finding. They
-remove the two steps that let lexer disagreements change SQL with no
-error. 006 and 007 touch different files and can run in parallel.
+No finding is open. [007](007-check-lex-against-postgres.md) fixes no
+finding. It checks `lex` against the Postgres scanner so future lexer
+disagreements fail in CI.
 
 ## One cause, three findings
 
@@ -41,7 +40,7 @@ Three parts work together:
    that disagrees with Postgres passes its own check, and a dropped
    comment changes what Postgres reads with no error.
 
-005 removes parts 1 and 2. 006 narrows part 3. 007 gives part 3 a
+005 removed parts 1 and 2. 006 narrowed part 3. 007 gives part 3 a
 check that does not use `lex`.
 
 ## Threat model

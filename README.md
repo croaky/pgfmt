@@ -44,8 +44,11 @@ ORDER BY
 
 `CASE` always expands. An expression that fits stays on its line; one
 that does not wraps at its arguments. Header comments above a statement
-pass through. A trailing `--` comment does not: the printer joins tokens
-onto a line, and a line comment would swallow what followed.
+pass through. A trailing `--` comment or a comment inside parentheses
+does not: the printer joins tokens onto a line, and a line comment would
+swallow what followed. If a dropped comment holds `'`, `"`, `$`, `\`,
+`/*`, or `*/`, pgfmt returns an error rather than drop it silently; move
+the comment to its own line above the statement.
 
 ## Postgres versions
 

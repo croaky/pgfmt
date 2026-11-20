@@ -804,8 +804,13 @@ func TestFormat(t *testing.T) {
 			// stopped at `$` read `$t$` as a dollar quote, which hid the
 			// text up to the next `$t$` in a string, here a comment.
 			name: "$ inside an identifier does not open a dollar quote",
+			in:   "select 1 as x$t$;\n-- $t$; drop table t;",
+			want: "SELECT\n  1 AS x$t$;\n-- $t$; drop table t;\n",
+		},
+		{
+			name: "trailing comment with $ is an error",
 			in:   "select 1 as x$t$; -- $t$; drop table t;",
-			want: "SELECT\n  1 AS x$t$;\n",
+			want: "",
 		},
 		{
 			name: "$1 against a word is one identifier",
@@ -818,8 +823,38 @@ func TestFormat(t *testing.T) {
 			// `''` there ran the string into the comment, and printed the
 			// comment text as statements.
 			name: "backslash escapes a quote in an E'' string",
-			in:   "select E'\\'' as x; -- ' ; drop table t;",
-			want: "SELECT\n  E'\\'' AS x;\n",
+			in:   "select E'\\'' as x;\n-- ' ; drop table t;",
+			want: "SELECT\n  E'\\'' AS x;\n-- ' ; drop table t;\n",
+		},
+		{
+			name: "trailing comment with quote is an error",
+			in:   "select 1; -- it's done",
+			want: "",
+		},
+		{
+			name: "trailing comment without delimiter is dropped",
+			in:   "select 1; -- done",
+			want: "SELECT\n  1;\n",
+		},
+		{
+			name: "comment inside parens with quote is an error",
+			in:   "select f(1 /* a 'b' */);",
+			want: "",
+		},
+		{
+			name: "comment inside parens without delimiter is dropped",
+			in:   "select f(1 /* a b */);",
+			want: "SELECT\n  f(1);\n",
+		},
+		{
+			name: "nested block comment inside parens is an error",
+			in:   "select f(1 /* a /* b */ */);",
+			want: "",
+		},
+		{
+			name: "standalone header comment with quote passes through",
+			in:   "-- it's a header\nselect 1;",
+			want: "-- it's a header\nSELECT\n  1;\n",
 		},
 		{
 			// Invalid UTF-8 bytes such as SJIS 0x95 0x5C can make

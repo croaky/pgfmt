@@ -67,8 +67,9 @@ func (it item) blanksBefore() int {
 const maxDepth = 100
 
 // checkDepth returns an error if parens do not balance, as Postgres
-// does, or if parens and CASE together nest deeper than maxDepth. It
-// reads the tokens once, before buildTree recurses.
+// does, if parens and CASE together nest deeper than maxDepth, or if
+// a comment inside parens (which buildTree drops) holds a quote or
+// delimiter. It reads the tokens once, before buildTree recurses.
 //
 // It counts CASE for each paren level, as findCaseEnd and nextCaseToken
 // pair CASE with END. An END lowers the count of its own level only,
@@ -103,6 +104,10 @@ func checkDepth(toks []token) error {
 		case t.kind == tkKeyword && t.val == "END" && level > 0:
 			cases--
 			level--
+		case parens > 0 && t.kind == tkComment:
+			if commentHasDelimiter(commentBody(t.val)) {
+				return errors.New("pgfmt: comment inside parens holds a quote or delimiter; move it to its own line above the statement")
+			}
 		}
 		if parens+cases > maxDepth {
 			return fmt.Errorf("pgfmt: parens and CASE nest deeper than %d", maxDepth)
