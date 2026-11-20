@@ -1246,9 +1246,10 @@ func TestFormat(t *testing.T) {
 		},
 		{
 			// psql reads lines after COPY ... FROM STDIN as data until
-			// a line holding only `\.`. Format refuses COPY FROM STDIN
-			// in any case or option form so line breaks cannot shift
-			// data into SQL.
+			// a line holding only `\.`. Postgres treats COPY ... FROM
+			// STDOUT the same way. Format refuses any COPY ... FROM
+			// whose target is not a file name or PROGRAM so line breaks
+			// cannot shift data into SQL or SQL into data.
 			name: "COPY FROM STDIN is an error",
 			in:   "COPY t FROM STDIN;\n/*\n\\.\n-- */\nDROP TABLE t;\n",
 		},
@@ -1265,9 +1266,44 @@ func TestFormat(t *testing.T) {
 			in:   "COPY t FROM STDIN; SELECT 1;",
 		},
 		{
+			name: "COPY FROM STDOUT is an error",
+			in:   "COPY t FROM STDOUT;",
+		},
+		{
+			name: "lowercase copy from stdout with columns and options is an error",
+			in:   "copy public.t (a, b) from stdout with (format csv);",
+		},
+		{
+			name: "COPY FROM STDOUT with comment before STDOUT is an error",
+			in:   "COPY t FROM /* note */ STDOUT;",
+		},
+		{
+			name: "statement after COPY FROM STDOUT on same line is an error",
+			in:   "COPY t FROM STDOUT; SELECT 1;",
+		},
+		{
+			name: "COPY FROM PROGRAM without string literal is an error",
+			in:   "COPY t FROM PROGRAM STDOUT;",
+		},
+		{
 			name: "COPY FROM file still formats",
 			in:   "copy t from '/tmp/data.csv';",
 			want: "copy t\nFROM\n  '/tmp/data.csv';\n",
+		},
+		{
+			name: "COPY FROM PROGRAM still formats",
+			in:   "copy t from program 'cat /tmp/data.csv';",
+			want: "copy t\nFROM\n  program 'cat /tmp/data.csv';\n",
+		},
+		{
+			name: "COPY FROM file with IS NOT DISTINCT FROM still formats",
+			in:   "copy t from '/tmp/data.csv' where a is not distinct from b;",
+			want: "copy t\nFROM\n  '/tmp/data.csv'\nWHERE\n  a IS NOT DISTINCT FROM b;\n",
+		},
+		{
+			name: "COPY TO STDOUT still formats",
+			in:   "copy t to stdout;",
+			want: "copy t TO stdout;\n",
 		},
 		{
 			// A bare `\.` line inside a comment, string, or dollar-quoted

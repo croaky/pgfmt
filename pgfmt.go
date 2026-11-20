@@ -66,9 +66,11 @@ func Format(src string) (string, error) {
 	return out, nil
 }
 
-// checkCopyFromStdin refuses any COPY ... FROM STDIN statement. psql
-// reads lines after that statement as data until a `\.` line, so moving
-// line breaks changes which lines psql runs as SQL.
+// checkCopyFromStdin refuses any COPY ... FROM statement whose source
+// is not a file name or PROGRAM. Postgres treats both STDIN and STDOUT
+// after FROM as a client-side copy, and psql reads lines after that
+// statement as data until a `\.` line, so moving line breaks changes
+// which lines psql runs as SQL.
 func checkCopyFromStdin(toks []token) error {
 	i, n := 0, len(toks)
 	for i < n {
@@ -85,20 +87,24 @@ func checkCopyFromStdin(toks []token) error {
 		}
 		if toks[j].kind == tkIdent && toks[j].val == "copy" {
 			depth := 0
+		scan:
 			for s := j + 1; s < k; s++ {
 				switch {
 				case toks[s].kind == tkPunct && toks[s].val == "(":
 					depth++
 				case toks[s].kind == tkPunct && toks[s].val == ")" && depth > 0:
 					depth--
+				case depth == 0 && toks[s].kind == tkKeyword && toks[s].val == "TO":
+					break scan
 				case depth == 0 && toks[s].kind == tkKeyword && toks[s].val == "FROM":
-					next := s + 1
-					for next < k && toks[next].kind == tkComment {
-						next++
+					next := skipComments(toks, s+1, k)
+					if next < k && toks[next].kind == tkIdent && toks[next].val == "program" {
+						next = skipComments(toks, next+1, k)
 					}
-					if next < k && toks[next].kind == tkIdent && toks[next].val == "stdin" {
-						return fmt.Errorf("pgfmt: COPY FROM STDIN is not supported")
+					if next >= k || toks[next].kind != tkString {
+						return fmt.Errorf("pgfmt: COPY FROM requires a file name or PROGRAM")
 					}
+					break scan
 				}
 			}
 		}
@@ -109,6 +115,13 @@ func checkCopyFromStdin(toks []token) error {
 		}
 	}
 	return nil
+}
+
+func skipComments(toks []token, i, limit int) int {
+	for i < limit && toks[i].kind == tkComment {
+		i++
+	}
+	return i
 }
 
 // keptDelimiterComments reports whether every comment in a that holds a
