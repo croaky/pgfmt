@@ -39,3 +39,26 @@ func TestStdoutPrintsAFormattedFile(t *testing.T) {
 	is.NoErr(err)
 	is.Eq(string(got), "")
 }
+
+// TestWriteLeavesFileWithNULUntouched checks that `pgfmt -w` exits
+// nonzero and does not modify a file that contains a NUL byte.
+func TestWriteLeavesFileWithNULUntouched(t *testing.T) {
+	is := is.New(t)
+	bin := filepath.Join(t.TempDir(), "pgfmt")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	out, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	const input = "select 1; -- note\x00\nselect 2;\n"
+	path := filepath.Join(t.TempDir(), "nul.sql")
+	is.NoErr(os.WriteFile(path, []byte(input), 0o644))
+
+	err = exec.Command(bin, "-w", path).Run()
+	is.HasErr(err)
+
+	got, err := os.ReadFile(path)
+	is.NoErr(err)
+	is.Eq(string(got), input)
+}

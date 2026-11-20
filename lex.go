@@ -217,9 +217,9 @@ func lex(src string, want int) ([]token, error) {
 			if p > 0 {
 				prefix = src[i] | 0x20 // ASCII lowercase
 			}
-			j, closed := quoteEnd(src, q+1, prefix)
-			if !closed {
-				return nil, fmt.Errorf("pgfmt: unterminated string literal at offset %d", i)
+			j, err := quoteEnd(src, i, q+1, prefix)
+			if err != nil {
+				return nil, err
 			}
 			if continuesString(src, j) {
 				return nil, fmt.Errorf("pgfmt: string literal continued on a new line at offset %d", i)
@@ -488,26 +488,61 @@ func stringPrefix(src string, i int) int {
 }
 
 // quoteEnd returns the offset one past the quote that ends a string
-// literal whose body starts at j, and whether that quote exists. The
-// prefix, the first byte of the literal in lowercase or 0 for none,
-// sets the rules, as in Postgres. In an E string, a backslash escapes
-// the next byte, so `\'` never ends the string. A B or X string ends
-// at the first quote. The others read a doubled quote as one quote.
-func quoteEnd(src string, j int, prefix byte) (int, bool) {
+// literal that starts at start and whose body starts at j0. The prefix,
+// the first byte of the literal in lowercase or 0 for none, sets the
+// rules, as in Postgres.
+//
+// Postgres finds the end of a string from client_encoding and
+// standard_conforming_strings, which the SQL file itself can change
+// with SET. pgfmt refuses each string whose end depends on either
+// setting rather than guess: a backslash directly after a byte of 0x80
+// or above in an escape-aware reading, and a plain or N string whose
+// end differs when standard_conforming_strings is off.
+func quoteEnd(src string, start, j0 int, prefix byte) (int, error) {
 	doubled := prefix != 'b' && prefix != 'x'
+	j, closed, err := scanQuote(src, j0, prefix == 'e', doubled)
+	if err != nil {
+		return 0, err
+	}
+	if !closed {
+		return 0, fmt.Errorf("pgfmt: unterminated string literal at offset %d", start)
+	}
+	if (prefix == 0 || prefix == 'n') && strings.IndexByte(src[j0:j], '\\') >= 0 {
+		offEnd, offClosed, err := scanQuote(src, j0, true, true)
+		if err != nil {
+			return 0, err
+		}
+		if !offClosed || offEnd != j {
+			return 0, fmt.Errorf("pgfmt: string literal at offset %d ends differently with standard_conforming_strings off", start)
+		}
+	}
+	return j, nil
+}
+
+// scanQuote scans a string literal body that starts at j0 and returns
+// the offset one past its closing quote and whether that quote exists.
+// When escape is true, a backslash escapes the next byte, and a
+// backslash directly after a byte of 0x80 or above is an error because
+// multibyte client encodings such as SJIS, BIG5, and GBK can read 0x5C
+// as the second byte of a character.
+func scanQuote(src string, j0 int, escape, doubled bool) (int, bool, error) {
+	j := j0
 	for j < len(src) {
 		switch {
-		case src[j] == '\\' && prefix == 'e':
+		case escape && src[j] == '\\':
+			if j > j0 && src[j-1] >= 0x80 {
+				return 0, false, fmt.Errorf("pgfmt: non-ASCII byte before backslash at offset %d; use a \\u escape or an ASCII byte between them", j)
+			}
 			j += 2
 		case src[j] != '\'':
 			j++
 		case doubled && j+1 < len(src) && src[j+1] == '\'':
 			j += 2
 		default:
-			return j + 1, true
+			return j + 1, true, nil
 		}
 	}
-	return j, false
+	return j, false, nil
 }
 
 // opChars are the bytes that Postgres reads as one operator when they

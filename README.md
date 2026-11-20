@@ -55,10 +55,11 @@ a form an older server rejects: the underscore separator of `1_000_000`
 and the radix prefixes of `0x1f`, `0o777`, and `0b1010` all arrived in
 Postgres 16.
 
-pgfmt reads a plain `'...'` string with `standard_conforming_strings`
-on, the Postgres default since 9.1. With the setting off, a backslash
-before a quote ends a string at a different byte. Do not format SQL
-for a server with the setting off.
+pgfmt reads its input as UTF-8 and refuses a NUL byte. It refuses each
+string whose end depends on `client_encoding` or
+`standard_conforming_strings`: a backslash directly after a non-ASCII
+byte in an `E'...'`, plain, or `N'...'` string, and a plain or `N'...'`
+string whose end differs with `standard_conforming_strings` off.
 
 ## Correctness
 

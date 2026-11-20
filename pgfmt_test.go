@@ -822,6 +822,79 @@ func TestFormat(t *testing.T) {
 			want: "SELECT\n  E'\\'' AS x;\n",
 		},
 		{
+			// Invalid UTF-8 bytes such as SJIS 0x95 0x5C can make
+			// quoteEnd treat a trail byte as a backslash escape.
+			name: "invalid UTF-8 in E'' string is an error",
+			in:   "select E'\x95\x5c' as x; -- ' ; drop table t;",
+			want: "",
+		},
+		{
+			// Valid UTF-8 whose last byte is >= 0x80 directly before a
+			// backslash can pair with 0x5C as one character under SJIS
+			// or GBK. Format refuses it rather than guess the encoding.
+			name: "non-ASCII byte before backslash in E'' string is an error",
+			in:   "select E'Á\\' as x; -- ' ; drop table t;",
+			want: "",
+		},
+		{
+			name: "non-ASCII byte before backslash escape in E'' string is an error",
+			in:   "select E'café\\n';",
+			want: "",
+		},
+		{
+			name: "unicode escape before backslash in E'' string formats",
+			in:   "select E'caf\\u00e9\\n';",
+			want: "SELECT\n  E'caf\\u00e9\\n';\n",
+		},
+		{
+			// Under standard_conforming_strings = off, an odd run of
+			// backslashes before a quote escapes that quote in a plain
+			// or N'' literal. Refuse strings whose end depends on the
+			// setting.
+			name: "plain string ending in odd backslashes is an error",
+			in:   "select 'a\\' as x; -- ' ; drop table t;",
+			want: "",
+		},
+		{
+			name: "N'' string ending in odd backslashes is an error",
+			in:   "select N'a\\' as x; -- ' ; drop table t;",
+			want: "",
+		},
+		{
+			name: "non-ASCII byte before backslash in plain string is an error",
+			in:   "select 'Á\\n';",
+			want: "",
+		},
+		{
+			// Plain strings whose end is identical under on and off
+			// still format.
+			name: "plain strings with setting-independent backslashes format",
+			in:   "select 'a\\\\', '\\n';",
+			want: "SELECT\n  'a\\\\',\n  '\\n';\n",
+		},
+		{
+			// NUL bytes inside comments, strings, or dollar quotes
+			// change how psql reads the file.
+			name: "NUL in trailing line comment is an error",
+			in:   "select 1; -- note\x00\nselect 2;",
+			want: "",
+		},
+		{
+			name: "NUL in nested block comment is an error",
+			in:   "/* a \x00 /* b */ */\nselect 1;",
+			want: "",
+		},
+		{
+			name: "NUL in string literal is an error",
+			in:   "select 'a\x00b';",
+			want: "",
+		},
+		{
+			name: "NUL in dollar-quoted string is an error",
+			in:   "select $$a\x00b$$;",
+			want: "",
+		},
+		{
 			name: "block comments nest",
 			in:   "/* a /* b */ c */\nselect 1;",
 			want: "/* a /* b */ c */\nSELECT\n  1;\n",
@@ -1125,6 +1198,35 @@ func TestFormat(t *testing.T) {
 			is.NoErr(err)
 			is.Eq(got, tt.want)
 		})
+	}
+}
+
+// TestMultibyteTrailBytesDisjointFromDelimiters checks the assumption
+// behind quoteEnd's multibyte guard: in every Postgres client encoding
+// whose trail bytes include 0x5C (from Postgres src/common/wchar.c), no
+// trail byte is a SQL quote, comment, dollar, line-break, or NUL byte.
+func TestMultibyteTrailBytesDisjointFromDelimiters(t *testing.T) {
+	is := is.New(t)
+	type byteRange struct{ lo, hi byte }
+	encodings := []struct {
+		name   string
+		trails []byteRange
+	}{
+		{"SJIS", []byteRange{{0x40, 0x7E}, {0x80, 0xFC}}},
+		{"SHIFT_JIS_2004", []byteRange{{0x40, 0x7E}, {0x80, 0xFC}}},
+		{"BIG5", []byteRange{{0x40, 0x7E}, {0xA1, 0xFE}}},
+		{"GBK", []byteRange{{0x40, 0x7E}, {0x80, 0xFE}}},
+		{"GB18030", []byteRange{{0x30, 0x39}, {0x40, 0x7E}, {0x80, 0xFE}}},
+		{"JOHAB", []byteRange{{0x31, 0x7E}, {0x81, 0xFE}}},
+		{"UHC", []byteRange{{0x41, 0x5A}, {0x61, 0x7A}, {0x81, 0xFE}}},
+	}
+	delimiters := []byte{'\'', '"', '$', '-', '*', '/', '\r', '\n', 0x00}
+	for _, enc := range encodings {
+		for _, r := range enc.trails {
+			for _, d := range delimiters {
+				is.True(d < r.lo || d > r.hi)
+			}
+		}
 	}
 }
 

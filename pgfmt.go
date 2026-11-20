@@ -7,10 +7,24 @@ package pgfmt
 import (
 	"bytes"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 )
 
 // Format formats SQL source per the fixed style.
 func Format(src string) (string, error) {
+	if i := strings.IndexByte(src, 0); i >= 0 {
+		return "", fmt.Errorf("pgfmt: NUL byte at offset %d", i)
+	}
+	if !utf8.ValidString(src) {
+		for i := 0; i < len(src); {
+			r, size := utf8.DecodeRuneInString(src[i:])
+			if r == utf8.RuneError && size == 1 {
+				return "", fmt.Errorf("pgfmt: invalid UTF-8 at offset %d", i)
+			}
+			i += size
+		}
+	}
 	// The input holds about one token for each 4 bytes. A slice of
 	// that size grows once or not at all, where a slice that grows
 	// from empty copies the tokens many times.

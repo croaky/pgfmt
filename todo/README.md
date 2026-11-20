@@ -12,33 +12,10 @@ Claude Security scans the pgfmt project
 attack path and the fix criteria of a finding. Match a finding to its
 plan by its ID, not by its title. Claude Security can change a title.
 
-After the change that fixes a finding lands, bump pgfmt in each repo
-that formats SQL with it. Then the owner runs
-`claudesec resolve --reason fixed <id>`.
-
-The scanner read all three findings at `f6efa2c`. Each one is still
-present at that commit.
-
-- `find_01CJeiFgwPhMJbA7DBLiZR7g` (medium): `quoteEnd` reads a 0x5C
-  byte in an `E'...'` string as a backslash, also where a multibyte
-  client encoding such as SJIS, BIG5, or GBK reads it as the second
-  byte of a character. Fix in
-  [005](005-refuse-setting-dependent-strings.md).
-- `find_01LzCutBxyeFojkhjihtF7u5` (medium): a file that runs
-  `SET standard_conforming_strings = off` makes a plain string end at
-  a different byte in Postgres than in `quoteEnd`. A quote in a
-  dropped trailing comment then becomes live. Fix in
-  [005](005-refuse-setting-dependent-strings.md).
-- `find_01RTfkB39UU8XXsWYQrCLvED` (low): `lex` accepts a NUL byte
-  inside a comment or a string. `psql` discards the rest of the line
-  after a NUL, so the formatted file runs statements that the input
-  hid. Fix in [005](005-refuse-setting-dependent-strings.md).
-
-[006](006-refuse-dropped-comments-with-quotes.md) and
-[007](007-check-lex-against-postgres.md) fix no finding. They remove
-the two steps that let each of these findings change SQL with no
-error. 005 and 007 touch different files and can run in parallel. 006
-edits `lex.go` near 005, so it lands after 005.
+No finding is open. [006](006-refuse-dropped-comments-with-quotes.md)
+and [007](007-check-lex-against-postgres.md) fix no finding. They
+remove the two steps that let lexer disagreements change SQL with no
+error. 006 and 007 touch different files and can run in parallel.
 
 ## One cause, three findings
 
