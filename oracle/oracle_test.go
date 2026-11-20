@@ -116,6 +116,10 @@ var seeds = []string{
 	"select f(1 /* a 'b' */);",
 	"select 'a'\n'b';",
 	"select 1e;",
+	"select .5, .25e-2 from t;",
+	"select a. 00000 from t;",
+	"select 1 . a from t;",
+	"select a . . b from t;",
 }
 
 // FuzzOracle checks that for every input pgfmt.Format accepts, the

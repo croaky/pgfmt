@@ -857,6 +857,29 @@ func TestFormat(t *testing.T) {
 			want: "-- it's a header\nSELECT\n  1;\n",
 		},
 		{
+			// Leading-dot floats stay one number, while a dot separated
+			// from digits or another dot keeps its space so Postgres
+			// does not merge them into FCONST or DOT_DOT.
+			name: "leading-dot float stays whole",
+			in:   "select .5, .25e-2 from t;",
+			want: "SELECT\n  .5,\n  .25e-2\nFROM\n  t;\n",
+		},
+		{
+			name: "dot and following number keep a space",
+			in:   "select a. 00000 from t;",
+			want: "SELECT\n  a. 00000\nFROM\n  t;\n",
+		},
+		{
+			name: "number and following dot keep a space",
+			in:   "select 1 . a from t;",
+			want: "SELECT\n  1 .a\nFROM\n  t;\n",
+		},
+		{
+			name: "two separated dots do not merge into ..",
+			in:   "select a . . b from t;",
+			want: "SELECT\n  a. .b\nFROM\n  t;\n",
+		},
+		{
 			// Invalid UTF-8 bytes such as SJIS 0x95 0x5C can make
 			// quoteEnd treat a trail byte as a backslash escape.
 			name: "invalid UTF-8 in E'' string is an error",

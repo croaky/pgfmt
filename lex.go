@@ -237,8 +237,8 @@ func lex(src string, want int) ([]token, error) {
 			i = j
 			continue
 		}
-		// Number.
-		if isDigit(ch) {
+		// Number (including leading-dot floats such as .5).
+		if isDigit(ch) || (ch == '.' && i+1 < n && isDigit(src[i+1])) {
 			j := numberEnd(src, i)
 			// A letter against the end of a number means the scan
 			// read less than the author wrote. Emitting two tokens
