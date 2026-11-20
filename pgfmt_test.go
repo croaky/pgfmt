@@ -1306,6 +1306,57 @@ func TestFormat(t *testing.T) {
 			want: "copy t TO stdout;\n",
 		},
 		{
+			// Postgres accepts reserved words such as to and from after a
+			// dot in a qualified relation name. checkCopyFromStdin must not
+			// treat those relation-name components as the COPY direction.
+			name: "COPY dotted to FROM STDIN is an error",
+			in:   "COPY s.to FROM STDIN;",
+		},
+		{
+			name: "statement after COPY dotted to FROM STDIN on same line is an error",
+			in:   "COPY s.to FROM STDIN; SELECT 1;",
+		},
+		{
+			name: "COPY dotted to FROM STDOUT is an error",
+			in:   "COPY s.to FROM STDOUT;",
+		},
+		{
+			name: "statement after COPY dotted to FROM STDOUT on same line is an error",
+			in:   "COPY s.to FROM STDOUT; SELECT 1;",
+		},
+		{
+			name: "COPY three-part dotted to FROM STDIN is an error",
+			in:   "COPY c.to.t FROM STDIN;",
+		},
+		{
+			name: "COPY BINARY dotted to with columns and comments FROM STDIN is an error",
+			in:   "COPY BINARY s /* a */ . /* b */ to (a, b) FROM STDIN;",
+		},
+		{
+			name: "COPY dotted from FROM STDIN is an error",
+			in:   "COPY s.from FROM STDIN;",
+		},
+		{
+			name: "COPY dotted from TO STDOUT still formats",
+			in:   "copy s.from to stdout;",
+			want: "copy s.\nFROM\n  TO stdout;\n",
+		},
+		{
+			name: "COPY dotted to FROM file still formats",
+			in:   "copy s.to from '/tmp/data.csv';",
+			want: "copy s.TO\nFROM\n  '/tmp/data.csv';\n",
+		},
+		{
+			name: "COPY dotted to FROM PROGRAM still formats",
+			in:   "copy s.to from program 'cat /tmp/data.csv';",
+			want: "copy s.TO\nFROM\n  program 'cat /tmp/data.csv';\n",
+		},
+		{
+			name: "COPY query TO STDOUT still formats",
+			in:   "copy (select 1) to stdout;",
+			want: "copy (SELECT 1) TO stdout;\n",
+		},
+		{
 			// A bare `\.` line inside a comment, string, or dollar-quoted
 			// body ends psql COPY mode mid-token. Refuse LF and CRLF forms.
 			name: "bare backslash-dot line in block comment is an error",

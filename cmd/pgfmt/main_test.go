@@ -85,3 +85,26 @@ func TestWriteLeavesCopyFromStdoutUntouched(t *testing.T) {
 	is.NoErr(err)
 	is.Eq(string(got), input)
 }
+
+// TestWriteLeavesCopyDottedToFromStdinUntouched checks that `pgfmt -w`
+// exits nonzero and does not modify a file that holds COPY s.to FROM STDIN.
+func TestWriteLeavesCopyDottedToFromStdinUntouched(t *testing.T) {
+	is := is.New(t)
+	bin := filepath.Join(t.TempDir(), "pgfmt")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	out, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	const input = "COPY s.to FROM STDIN; SELECT 1;\n"
+	path := filepath.Join(t.TempDir(), "copy.sql")
+	is.NoErr(os.WriteFile(path, []byte(input), 0o644))
+
+	err = exec.Command(bin, "-w", path).Run()
+	is.HasErr(err)
+
+	got, err := os.ReadFile(path)
+	is.NoErr(err)
+	is.Eq(string(got), input)
+}

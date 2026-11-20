@@ -87,16 +87,20 @@ func checkCopyFromStdin(toks []token) error {
 		}
 		if toks[j].kind == tkIdent && toks[j].val == "copy" {
 			depth := 0
+			afterDot := false
 		scan:
 			for s := j + 1; s < k; s++ {
+				if toks[s].kind == tkComment {
+					continue
+				}
 				switch {
 				case toks[s].kind == tkPunct && toks[s].val == "(":
 					depth++
 				case toks[s].kind == tkPunct && toks[s].val == ")" && depth > 0:
 					depth--
-				case depth == 0 && toks[s].kind == tkKeyword && toks[s].val == "TO":
+				case depth == 0 && !afterDot && toks[s].kind == tkKeyword && toks[s].val == "TO":
 					break scan
-				case depth == 0 && toks[s].kind == tkKeyword && toks[s].val == "FROM":
+				case depth == 0 && !afterDot && toks[s].kind == tkKeyword && toks[s].val == "FROM":
 					next := skipComments(toks, s+1, k)
 					if next < k && toks[next].kind == tkIdent && toks[next].val == "program" {
 						next = skipComments(toks, next+1, k)
@@ -106,6 +110,7 @@ func checkCopyFromStdin(toks []token) error {
 					}
 					break scan
 				}
+				afterDot = toks[s].kind == tkOp && toks[s].val == "."
 			}
 		}
 		if k < n && toks[k].kind == tkPunct && toks[k].val == ";" {
