@@ -58,8 +58,10 @@ a form an older server rejects: the underscore separator of `1_000_000`
 and the radix prefixes of `0x1f`, `0o777`, and `0b1010` all arrived in
 Postgres 16.
 
-pgfmt reads its input as UTF-8 and refuses a NUL byte. It refuses each
-string whose end depends on `client_encoding` or
+pgfmt reads its input as UTF-8, assumes a UTF-8 `client_encoding`, and
+refuses a NUL byte. It refuses `COPY ... FROM STDIN` and any multi-line
+comment, string, or dollar-quoted body that holds a line with only `\.`.
+It also refuses each string whose end depends on `client_encoding` or
 `standard_conforming_strings`: a backslash directly after a non-ASCII
 byte in an `E'...'`, plain, or `N'...'` string, and a plain or `N'...'`
 string whose end differs with `standard_conforming_strings` off.

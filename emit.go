@@ -941,7 +941,7 @@ func emitOnConflict(b *bytes.Buffer, c clause, base int) {
 		}
 	}
 
-	if len(action) >= 2 && action[0].isKW("DO") && action[1].isKW("NOTHING") {
+	if len(action) == 2 && action[0].isKW("DO") && action[1].isKW("NOTHING") {
 		writeIndent(b, base)
 		b.WriteString("DO NOTHING\n")
 		writeTerminator(b, c.trailer)
@@ -1063,6 +1063,9 @@ func emitMergeWhen(b *bytes.Buffer, c clause, base int) {
 	if len(cond) > 0 && cond[0].isKW("AND") {
 		b.WriteString(" AND ")
 		emitWhenCondition(b, cond[1:], base, base+2)
+	} else if len(cond) > 0 {
+		b.WriteByte(' ')
+		writeInline(b, cond)
 	}
 	b.WriteString(" THEN\n")
 	emitMergeAction(b, action, base+2)

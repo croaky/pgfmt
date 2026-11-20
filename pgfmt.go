@@ -33,6 +33,9 @@ func Format(src string) (string, error) {
 		return "", err
 	}
 	upcaseDDLKeywords(toks)
+	if err := checkCopyFromStdin(toks); err != nil {
+		return "", err
+	}
 	if err := checkDepth(toks); err != nil {
 		return "", err
 	}
@@ -56,8 +59,82 @@ func Format(src string) (string, error) {
 	if !sameTokens(toks, outToks) {
 		return "", fmt.Errorf("pgfmt: round-trip token mismatch")
 	}
+	if !keptDelimiterComments(toks, outToks) {
+		return "", fmt.Errorf("pgfmt: dropped comment holds a quote or delimiter")
+	}
 
 	return out, nil
+}
+
+// checkCopyFromStdin refuses any COPY ... FROM STDIN statement. psql
+// reads lines after that statement as data until a `\.` line, so moving
+// line breaks changes which lines psql runs as SQL.
+func checkCopyFromStdin(toks []token) error {
+	i, n := 0, len(toks)
+	for i < n {
+		j := i
+		for j < n && toks[j].kind == tkComment {
+			j++
+		}
+		if j >= n || toks[j].kind == tkEOF {
+			break
+		}
+		k := j
+		for k < n && toks[k].kind != tkEOF && !(toks[k].kind == tkPunct && toks[k].val == ";") {
+			k++
+		}
+		if toks[j].kind == tkIdent && toks[j].val == "copy" {
+			depth := 0
+			for s := j + 1; s < k; s++ {
+				switch {
+				case toks[s].kind == tkPunct && toks[s].val == "(":
+					depth++
+				case toks[s].kind == tkPunct && toks[s].val == ")" && depth > 0:
+					depth--
+				case depth == 0 && toks[s].kind == tkKeyword && toks[s].val == "FROM":
+					next := s + 1
+					for next < k && toks[next].kind == tkComment {
+						next++
+					}
+					if next < k && toks[next].kind == tkIdent && toks[next].val == "stdin" {
+						return fmt.Errorf("pgfmt: COPY FROM STDIN is not supported")
+					}
+				}
+			}
+		}
+		if k < n && toks[k].kind == tkPunct && toks[k].val == ";" {
+			i = k + 1
+		} else {
+			i = k
+		}
+	}
+	return nil
+}
+
+// keptDelimiterComments reports whether every comment in a that holds a
+// quote or delimiter still appears in b in the same order. lex and
+// checkDepth check trailing and in-paren comments, so this catches any
+// emitter that drops a comment silently.
+func keptDelimiterComments(a, b []token) bool {
+	j := 0
+	for _, t := range a {
+		if t.kind != tkComment || !commentHasDelimiter(commentBody(t.val)) {
+			continue
+		}
+		found := false
+		for j < len(b) {
+			if b[j].kind == tkComment && b[j].val == t.val {
+				j++
+				found = true
+				break
+			}
+			j++
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // sameTokens reports whether a and b hold the same tokens, with each

@@ -1244,6 +1244,74 @@ func TestFormat(t *testing.T) {
 			in:   "begin; select 1; end;",
 			want: "BEGIN;\nSELECT\n  1;\nEND;\n",
 		},
+		{
+			// psql reads lines after COPY ... FROM STDIN as data until
+			// a line holding only `\.`. Format refuses COPY FROM STDIN
+			// in any case or option form so line breaks cannot shift
+			// data into SQL.
+			name: "COPY FROM STDIN is an error",
+			in:   "COPY t FROM STDIN;\n/*\n\\.\n-- */\nDROP TABLE t;\n",
+		},
+		{
+			name: "lowercase copy from stdin with options is an error",
+			in:   "copy public.t (a, b) from stdin with (format csv);",
+		},
+		{
+			name: "COPY FROM STDIN with comment before STDIN is an error",
+			in:   "COPY t FROM /* note */ STDIN;",
+		},
+		{
+			name: "statement after COPY FROM STDIN on same line is an error",
+			in:   "COPY t FROM STDIN; SELECT 1;",
+		},
+		{
+			name: "COPY FROM file still formats",
+			in:   "copy t from '/tmp/data.csv';",
+			want: "copy t\nFROM\n  '/tmp/data.csv';\n",
+		},
+		{
+			// A bare `\.` line inside a comment, string, or dollar-quoted
+			// body ends psql COPY mode mid-token. Refuse LF and CRLF forms.
+			name: "bare backslash-dot line in block comment is an error",
+			in:   "/*\n\\.\n*/\nselect 1;",
+		},
+		{
+			name: "bare backslash-dot CRLF line in block comment is an error",
+			in:   "/*\r\n\\.\r\n*/\r\nselect 1;",
+		},
+		{
+			name: "bare backslash-dot line in string literal is an error",
+			in:   "select 'a\n\\.\nb';",
+		},
+		{
+			name: "bare backslash-dot line in dollar-quoted string is an error",
+			in:   "select $$\n\\.\n$$;",
+		},
+		{
+			name: "backslash-dot inside a longer comment or string line formats",
+			in:   "/* end with \\. here */\nselect 'use \\. to end';",
+			want: "/* end with \\. here */\nSELECT\n  'use \\. to end';\n",
+		},
+		{
+			// Comments after ON CONFLICT DO NOTHING or between a MERGE
+			// WHEN head and THEN must either survive or return an error.
+			name: "block comment with quote after ON CONFLICT DO NOTHING survives",
+			in:   "insert into t (id) values (1) on conflict do nothing /* ' */;",
+			want: "INSERT INTO t (id)\n  VALUES (1)\nON CONFLICT\nDO NOTHING /* ' */;\n",
+		},
+		{
+			name: "standalone line comment with quote after ON CONFLICT DO NOTHING is an error",
+			in:   "insert into t (id) values (1) on conflict do nothing\n-- '\n;",
+		},
+		{
+			name: "block comment with quote in MERGE WHEN before THEN survives",
+			in:   "merge into t using s on t.id = s.id when matched /* ' */ then delete;",
+			want: "MERGE INTO\n  t\nUSING\n  s\n    ON t.id = s.id\nWHEN MATCHED /* ' */ THEN\n  DELETE;\n",
+		},
+		{
+			name: "standalone line comment with quote in MERGE WHEN before THEN is an error",
+			in:   "merge into t using s on t.id = s.id when matched\n-- '\nthen delete;",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

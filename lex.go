@@ -204,7 +204,11 @@ func lex(src string, want int) ([]token, error) {
 			if !closed {
 				return nil, fmt.Errorf("pgfmt: unterminated block comment at offset %d", i)
 			}
-			toks = append(toks, token{kind: tkComment, val: src[i:j], blanksBefore: blanks})
+			val := src[i:j]
+			if hasCopyEndLine(val) {
+				return nil, fmt.Errorf("pgfmt: block comment at offset %d holds a bare \\. line", i)
+			}
+			toks = append(toks, token{kind: tkComment, val: val, blanksBefore: blanks})
 			blanks = 0
 			i = j
 			continue
@@ -231,6 +235,9 @@ func lex(src string, want int) ([]token, error) {
 			val := src[i:j]
 			if strings.ContainsAny(src[i:q], "ebxnu") {
 				val = strings.ToUpper(src[i:q]) + src[q:j]
+			}
+			if hasCopyEndLine(val) {
+				return nil, fmt.Errorf("pgfmt: string literal at offset %d holds a bare \\. line", i)
 			}
 			toks = append(toks, token{kind: tkString, val: val, blanksBefore: blanks})
 			blanks = 0
@@ -264,7 +271,11 @@ func lex(src string, want int) ([]token, error) {
 					return nil, fmt.Errorf("pgfmt: unterminated %s string at offset %d", tag, i)
 				}
 				j := i + len(tag) + end + len(tag)
-				toks = append(toks, token{kind: tkString, val: src[i:j], blanksBefore: blanks})
+				val := src[i:j]
+				if hasCopyEndLine(val) {
+					return nil, fmt.Errorf("pgfmt: dollar-quoted string at offset %d holds a bare \\. line", i)
+				}
+				toks = append(toks, token{kind: tkString, val: val, blanksBefore: blanks})
 				blanks = 0
 				i = j
 				continue
@@ -431,6 +442,28 @@ func commentHasDelimiter(body string) bool {
 	return strings.ContainsAny(body, "'\"$\\") ||
 		strings.Contains(body, "/*") ||
 		strings.Contains(body, "*/")
+}
+
+// hasCopyEndLine reports whether s holds a physical line that is only
+// `\.`, the psql COPY FROM STDIN end-of-data marker, with LF or CRLF
+// ending.
+func hasCopyEndLine(s string) bool {
+	for len(s) > 0 {
+		line := s
+		if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+			line = s[:nl]
+			s = s[nl+1:]
+		} else {
+			s = ""
+		}
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		if line == `\.` {
+			return true
+		}
+	}
+	return false
 }
 
 // commentBody returns the interior of a `--` or `/* ... */` comment.
