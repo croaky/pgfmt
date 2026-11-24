@@ -559,6 +559,44 @@ func TestFormat(t *testing.T) {
 			want: "",
 		},
 		{
+			// Postgres rejects a numeric literal followed by an
+			// identifier continuation byte, including `$` and
+			// out-of-radix digits such as `0b02` or `0o08`.
+			name: "binary literal against dollar sign is refused",
+			in:   "select 0B0$$$$;",
+			want: "",
+		},
+		{
+			name: "binary literal against non-binary digit is refused",
+			in:   "select 0b02;",
+			want: "",
+		},
+		{
+			name: "octal literal against non-octal digit is refused",
+			in:   "select 0o08;",
+			want: "",
+		},
+		{
+			name: "exponent literal against dollar sign is refused",
+			in:   "select 1e2$$$$;",
+			want: "",
+		},
+		{
+			name: "underscore directly after decimal point is refused",
+			in:   "select 1._2;",
+			want: "",
+		},
+		{
+			name: "double dot stays one token before a digit",
+			in:   "select 1..2, ..0;",
+			want: "SELECT\n  1 .. 2,\n  .. 0;\n",
+		},
+		{
+			name: "dot before double dot keeps a space",
+			in:   "select a . .. b from t;",
+			want: "SELECT\n  a. .. b\nFROM\n  t;\n",
+		},
+		{
 			name: "escape string literal keeps E prefix attached",
 			in:   "select concat_ws(e'\\n', a, b) from t;",
 			want: "" +

@@ -60,13 +60,19 @@ func checkOracle(t *testing.T, src string) {
 	if err != nil {
 		return
 	}
-	inToks, err := scanTokens(src)
-	if err != nil {
-		t.Fatalf("pgfmt accepted input that Postgres scanner rejected:\nin:  %q\nout: %q\nerr: %v", src, out, err)
+	inToks, inErr := scanTokens(src)
+	outToks, outErr := scanTokens(out)
+	if inErr != nil {
+		if outErr == nil {
+			t.Fatalf("pgfmt accepted input that Postgres scanner rejected:\nin:  %q\nout: %q\nerr: %v", src, out, inErr)
+		}
+		if errKind(inErr) != errKind(outErr) {
+			t.Fatalf("Postgres scanner error changed:\nin:     %q\nout:    %q\ninErr:  %v\noutErr: %v", src, out, inErr, outErr)
+		}
+		return
 	}
-	outToks, err := scanTokens(out)
-	if err != nil {
-		t.Fatalf("Postgres scanner rejected formatted output:\nin:  %q\nout: %q\nerr: %v", src, out, err)
+	if outErr != nil {
+		t.Fatalf("Postgres scanner rejected formatted output:\nin:  %q\nout: %q\nerr: %v", src, out, outErr)
 	}
 	if len(inToks) != len(outToks) {
 		t.Fatalf("Postgres token count changed (%d -> %d):\nin:  %q\nout: %q\ninToks:  %v\noutToks: %v",
@@ -78,6 +84,11 @@ func checkOracle(t *testing.T, src string) {
 				i, inToks[i], outToks[i], src, out)
 		}
 	}
+}
+
+func errKind(err error) string {
+	msg, _, _ := strings.Cut(err.Error(), " at or near ")
+	return msg
 }
 
 func formatToks(toks []normTok) string {
@@ -120,11 +131,24 @@ var seeds = []string{
 	"select a. 00000 from t;",
 	"select 1 . a from t;",
 	"select a . . b from t;",
+	"0B0$$$$",
+	"0x0$$$$",
+	"0o0$$$$",
+	"0b02",
+	"0o08",
+	"1$$$$",
+	"1.5$$$$",
+	"1e2$$$$",
+	"..0",
+	"1..2",
+	". ..",
+	"1._2",
+	"E'0\\0'",
 }
 
 // FuzzOracle checks that for every input pgfmt.Format accepts, the
 // Postgres 17 scanner reads the same non-comment tokens from input and
-// output.
+// output, or rejects both with the same error kind.
 //
 // pg_query.Scan uses UTF-8 with standard_conforming_strings = on. The
 // off-setting and multibyte invariants stay covered by quoteEnd and

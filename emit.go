@@ -131,7 +131,7 @@ func needSpace(prev, next item) bool {
 	// Keep a space when joining `.` with a number or another `.` would
 	// merge two tokens into FCONST (.5, 1.) or DOT_DOT (..).
 	if prev.tok != nil && next.tok != nil {
-		if prev.tok.val == "." && (next.tok.kind == tkNumber || next.tok.val == ".") {
+		if prev.tok.val == "." && (next.tok.kind == tkNumber || next.tok.val == "." || next.tok.val == "..") {
 			return true
 		}
 		if prev.tok.kind == tkNumber && next.tok.val == "." {

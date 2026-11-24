@@ -247,12 +247,13 @@ func lex(src string, want int) ([]token, error) {
 		// Number (including leading-dot floats such as .5).
 		if isDigit(ch) || (ch == '.' && i+1 < n && isDigit(src[i+1])) {
 			j := numberEnd(src, i)
-			// A letter against the end of a number means the scan
-			// read less than the author wrote. Emitting two tokens
-			// would print `1e6` as `1 e6`, which re-lexes as the same
-			// two tokens, so the round-trip check in Format cannot see
-			// it. Refuse instead: Postgres rejects the same input.
-			if j < n && isIdentStart(src[j]) {
+			// An identifier byte (isIdentCont or `$`) against the end
+			// of a number means numberEnd stopped short. Emitting two
+			// tokens prints `0b02` as `0b0 2` or `0B0$$$$` as
+			// `0B0 $$$$`, and the round-trip check in Format misses
+			// the split. Refuse the input instead: Postgres rejects
+			// these forms as trailing junk after a numeric literal.
+			if j < n && (isIdentCont(src[j]) || src[j] == '$') {
 				return nil, fmt.Errorf("pgfmt: trailing junk after numeric literal at offset %d", i)
 			}
 			toks = append(toks, token{kind: tkNumber, val: src[i:j], blanksBefore: blanks})
@@ -374,7 +375,7 @@ func numberEnd(src string, i int) int {
 	}
 
 	j := runOfDigits(src, i, decimalDigits)
-	if j < n && src[j] == '.' {
+	if j < n && src[j] == '.' && !strings.HasPrefix(src[j:], "..") {
 		j = runOfDigits(src, j+1, decimalDigits)
 	}
 
@@ -405,9 +406,9 @@ const (
 // runOfDigits returns the offset one past a run of digits that may hold
 // an underscore between two of them.
 //
-// Postgres 16 added the separator, for a literal a reader can count:
-// 1_000_000. It has to sit between digits, so a trailing one ends the
-// number and leaves an identifier, which is what Postgres reads too.
+// Postgres 16 added the separator for readable literals such as
+// 1_000_000. It must sit between two digits. A leading or trailing
+// underscore ends the scan so lex refuses it as trailing junk.
 func runOfDigits(src string, i int, digits string) int {
 	n := len(src)
 	j := i
@@ -416,7 +417,7 @@ func runOfDigits(src string, i int, digits string) int {
 			j++
 			continue
 		}
-		if src[j] == '_' && j+1 < n && strings.IndexByte(digits, src[j+1]) >= 0 {
+		if j > i && src[j] == '_' && j+1 < n && strings.IndexByte(digits, src[j+1]) >= 0 {
 			j += 2
 			continue
 		}
@@ -630,6 +631,9 @@ const opChars = "~!@#^&|`?+-*/%<>="
 func matchOp(src string, i int) (string, int) {
 	if strings.HasPrefix(src[i:], "::") {
 		return "::", i + 2
+	}
+	if strings.HasPrefix(src[i:], "..") {
+		return "..", i + 2
 	}
 	if src[i] == '.' {
 		return ".", i + 1
