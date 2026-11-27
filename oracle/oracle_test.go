@@ -144,6 +144,12 @@ var seeds = []string{
 	". ..",
 	"1._2",
 	"E'0\\0'",
+	"select $1abc;",
+	"select $1_;",
+	"select $1E'x';",
+	"select $1e'a\\'b';",
+	"select $1a$$b$$;",
+	"select $1$$x$$;",
 }
 
 // FuzzOracle checks that for every input pgfmt.Format accepts, the

@@ -282,11 +282,17 @@ func lex(src string, want int) ([]token, error) {
 				continue
 			}
 		}
-		// Parameter: $N.
+		// Parameter: $N. Postgres 15+ reads a parameter directly followed
+		// by an identifier start byte (ASCII letter, underscore, or byte
+		// >= 0x80) as one erroring param_junk token. Splitting it prints
+		// two valid tokens or shifts a string boundary when E' follows.
 		if ch == '$' && i+1 < n && isDigit(src[i+1]) {
 			j := i + 1
 			for j < n && isDigit(src[j]) {
 				j++
+			}
+			if j < n && (isIdentStart(src[j]) || src[j] >= 0x80) {
+				return nil, fmt.Errorf("pgfmt: trailing junk after parameter at offset %d", i)
 			}
 			toks = append(toks, token{kind: tkParam, val: src[i:j], blanksBefore: blanks})
 			blanks = 0

@@ -77,8 +77,9 @@ means something else.
 
 That check cannot see a token the lexer split, since both halves survive
 the trip. So the lexer refuses instead where a split would hide: a
-letter against the end of a number, such as `1e`, is an error, and
-Postgres rejects the same input.
+letter against the end of a number, such as `1e`, or an identifier start
+against a parameter, such as `$1abc`, is an error, and Postgres rejects
+the same input.
 
 The check also cannot see a token that ends at a different byte than
 in Postgres. So the lexer ends each token where Postgres does. A name

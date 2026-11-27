@@ -1437,6 +1437,34 @@ func TestFormat(t *testing.T) {
 			name: "standalone line comment with quote in MERGE WHEN before THEN is an error",
 			in:   "merge into t using s on t.id = s.id when matched\n-- '\nthen delete;",
 		},
+		{
+			// Postgres 15+ reads a positional parameter directly followed
+			// by an identifier start byte as param_junk. Splitting them
+			// turns an error into valid SQL or shifts an E'...' string end.
+			name: "positional parameter with trailing letters is an error",
+			in:   "select $1abc;",
+		},
+		{
+			name: "positional parameter with trailing underscore is an error",
+			in:   "select $1_;",
+		},
+		{
+			name: "positional parameter with trailing E string is an error",
+			in:   "select $1E'x';",
+		},
+		{
+			name: "positional parameter with trailing lowercase e escaped quote string is an error",
+			in:   "select $1e'a\\'b';",
+		},
+		{
+			name: "positional parameter with trailing ident and dollar quote is an error",
+			in:   "select $1a$$b$$;",
+		},
+		{
+			name: "positional parameter with valid followers still formats",
+			in:   "select $1, $1::int, $1 abc, $1 E'x', $1$$x$$, like$1 from t;",
+			want: "SELECT\n  $1,\n  $1::int,\n  $1 abc,\n  $1 E'x',\n  $1 $$x$$,\n  like$1\nFROM\n  t;\n",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
