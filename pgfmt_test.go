@@ -1548,6 +1548,87 @@ func TestLexOperatorRunTime(t *testing.T) {
 	}
 }
 
+// TestFormatOutputAndIndentLimits checks that Format bounds both line
+// indent and total output size relative to len(src), and stops writing
+// without buffering a large output.
+func TestFormatOutputAndIndentLimits(t *testing.T) {
+	commas := strings.Repeat(",", 5000) + "1"
+
+	joinWithCommas := func(depth int) string {
+		return strings.Repeat("select 1 from t join u on x = (", depth) +
+			"select " + commas + " from t" +
+			strings.Repeat(")", depth) + ";"
+	}
+	caseWithCommas := func(depth int) string {
+		// Each CASE nests in THEN; the innermost value is a comma list
+		// inside parens so total depth stays at maxDepth.
+		return "select " +
+			strings.Repeat("case when x = 1 then ", depth-1) +
+			"(" + commas + ")" +
+			strings.Repeat(" else 2 end", depth-1) + ";"
+	}
+	mergeWithCommas := func(depth int) string {
+		return strings.Repeat("merge into t using s on t.id = s.id when matched then update set x = (", depth) +
+			"select " + commas + " from t" +
+			strings.Repeat(")", depth) + ";"
+	}
+	windowWithCommas := func(depth int) string {
+		return strings.Repeat("select f() over (partition by ", depth) +
+			commas +
+			strings.Repeat(")", depth) + ";"
+	}
+
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"join ON subqueries at maxDepth with commas", joinWithCommas(maxDepth)},
+		{"join ON subqueries under maxIndent with commas", joinWithCommas(30)},
+		{"nested CASE at maxDepth with commas", caseWithCommas(maxDepth)},
+		{"MERGE actions at maxDepth with commas", mergeWithCommas(maxDepth)},
+		{"window specs at maxDepth with commas", windowWithCommas(maxDepth)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			_, err := Format(tc.src)
+			is.HasErr(err)
+
+			// Verify directly that outBuf stops before buffering past
+			// the documented output budget.
+			toks, err := lex(tc.src, len(tc.src)/4+1)
+			is.NoErr(err)
+			upcaseDDLKeywords(toks)
+			is.NoErr(checkDepth(toks))
+			items := buildTree(toks)
+			budget := max(minOutputBudget, maxOutputRatio*len(tc.src))
+			var b outBuf
+			b.limit = budget
+			b.buf.Grow(min(len(tc.src)+len(tc.src)/4, budget))
+			pTop(&b, items)
+			is.HasErr(b.err)
+			is.True(b.Len() <= budget)
+			is.True(b.buf.Cap() <= 2*budget)
+		})
+	}
+
+	// Verify that accepted output at maxDepth stays within maxIndent
+	// and the output budget.
+	t.Run("accepted depth limit stays within maxIndent and budget", func(t *testing.T) {
+		is := is.New(t)
+		src := "select " + strings.Repeat("(", maxDepth) + "1" + strings.Repeat(")", maxDepth) + ";"
+		out, err := Format(src)
+		is.NoErr(err)
+		budget := max(minOutputBudget, maxOutputRatio*len(src))
+		is.True(len(out) <= budget)
+		for line := range strings.SplitSeq(out, "\n") {
+			indent := len(line) - len(strings.TrimLeft(line, " "))
+			is.True(indent <= maxIndent)
+		}
+	})
+}
+
 // benchFile is a migration of the kind pgfmt formats: header comments,
 // DDL, a CTE, joins, CASE, a long function call that wraps, an upsert,
 // a MERGE, and a PL/pgSQL body in a dollar quote. It also holds the
@@ -1581,12 +1662,13 @@ commit;
 // depth limit that checkDepth enforces.
 func BenchmarkFormat(b *testing.B) {
 	depth := "select " + strings.Repeat("(", maxDepth) + "1" + strings.Repeat(")", maxDepth) + ";"
+	caseDepth := (maxIndent - 2) / 4
 	cases := []struct{ name, in string }{
 		{"query", "select id, name from t where x = 1 order by id desc;"},
 		{"migration", benchFile},
 		{"large", strings.Repeat(benchFile+"\n", 100)},
 		{"depth", depth},
-		{"case", "select " + strings.Repeat("case when x = 1 then ", maxDepth) + "1" + strings.Repeat(" else 2 end", maxDepth) + ";"},
+		{"case", "select " + strings.Repeat("case when x = 1 then ", caseDepth) + "1" + strings.Repeat(" else 2 end", caseDepth) + ";"},
 	}
 	for _, c := range cases {
 		if _, err := Format(c.in); err != nil {

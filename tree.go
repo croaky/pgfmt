@@ -58,12 +58,14 @@ func (it item) blanksBefore() int {
 }
 
 // maxDepth is the deepest nesting of parens and CASE that Format
-// accepts. The tree and emit stages recurse once for each level, the
-// indent grows two spaces for each level, and the fits-on-one-line
-// measure in emitExpr reads the subtree again at each level. The limit
-// bounds all three: the stack, the output at about 200 spaces of indent
-// on a line, and the CPU time at input size times maxDepth. Hand-written
-// SQL stays far below 100 levels.
+// accepts. The tree and emit stages recurse once for each level, and
+// the fits-on-one-line measure in emitExpr reads the subtree again at
+// each level. Because some constructs add more than two spaces per
+// level (up to 6 for join ON subqueries and MERGE actions, 4 for CASE
+// and window specs), emit.go also caps line indent at maxIndent
+// (2*maxDepth+2) and total output at max(minOutputBudget,
+// maxOutputRatio*len(src)). Hand-written SQL stays far below both
+// limits.
 const maxDepth = 100
 
 // checkDepth returns an error if parens do not balance, as Postgres

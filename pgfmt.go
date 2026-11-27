@@ -5,7 +5,6 @@
 package pgfmt
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -40,11 +39,19 @@ func Format(src string) (string, error) {
 		return "", err
 	}
 	items := buildTree(toks)
-	var b bytes.Buffer
-	b.Grow(len(src) + len(src)/4)
+	budget := max(minOutputBudget, maxOutputRatio*len(src))
+	var b outBuf
+	b.limit = budget
+	b.buf.Grow(min(len(src)+len(src)/4, budget))
 	pTop(&b, items)
+	if b.err != nil {
+		return "", b.err
+	}
 	if bs := b.Bytes(); len(bs) == 0 || bs[len(bs)-1] != '\n' {
 		b.WriteByte('\n')
+	}
+	if b.err != nil {
+		return "", b.err
 	}
 	out := b.String()
 

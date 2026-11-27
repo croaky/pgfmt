@@ -5,10 +5,71 @@ package pgfmt
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 )
 
 const lineLimit = 80
+
+// maxIndent is the widest line indent Format writes: two spaces for
+// each level up to maxDepth, plus two spaces for a clause body. Paths
+// that add more than two spaces per level (join ON, MERGE actions,
+// CASE, window specs) hit maxIndent before maxDepth.
+const maxIndent = 2*maxDepth + 2
+
+// maxOutputRatio and minOutputBudget cap the bytes Format buffers for
+// one input: max(minOutputBudget, maxOutputRatio*len(src)). The floor
+// lets short inputs at maxDepth format, while larger inputs stay within
+// maxOutputRatio times their length.
+const (
+	maxOutputRatio  = 16
+	minOutputBudget = 32 << 10
+)
+
+var (
+	errIndentLimit = fmt.Errorf("pgfmt: indent exceeds %d spaces", maxIndent)
+	errOutputLimit = fmt.Errorf("pgfmt: output exceeds %dx input size", maxOutputRatio)
+)
+
+// outBuf wraps bytes.Buffer and stops writing once output exceeds limit
+// or an indent exceeds maxIndent. All subsequent writes become no-ops
+// so Format returns an error without buffering a large output.
+type outBuf struct {
+	buf   bytes.Buffer
+	limit int
+	err   error
+}
+
+func (b *outBuf) WriteByte(c byte) error {
+	if b.err != nil {
+		return b.err
+	}
+	if b.buf.Len()+1 > b.limit {
+		b.err = errOutputLimit
+		return b.err
+	}
+	return b.buf.WriteByte(c)
+}
+
+func (b *outBuf) WriteString(s string) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	if b.buf.Len()+len(s) > b.limit {
+		b.err = errOutputLimit
+		return 0, b.err
+	}
+	return b.buf.WriteString(s)
+}
+
+func (b *outBuf) Bytes() []byte  { return b.buf.Bytes() }
+func (b *outBuf) Len() int       { return b.buf.Len() }
+func (b *outBuf) String() string { return b.buf.String() }
+func (b *outBuf) Truncate(n int) {
+	if b.err == nil {
+		b.buf.Truncate(n)
+	}
+}
 
 // pairedFns wraps two args per line when wrapping is needed.
 var pairedFns = map[string]bool{
@@ -50,7 +111,7 @@ func inlineLen(items []item) int {
 // writer is what writeInline writes to: the strings.Builder of inline,
 // or the bytes.Buffer of the output.
 type writer interface {
-	*strings.Builder | *bytes.Buffer
+	*strings.Builder | *outBuf
 	WriteByte(byte) error
 	WriteString(string) (int, error)
 }
@@ -118,7 +179,7 @@ func isTxnControlKeyword(v string) bool {
 		strings.EqualFold(v, "ROLLBACK")
 }
 
-func emitCaseValue(b *bytes.Buffer, items []item, indent int) {
+func emitCaseValue(b *outBuf, items []item, indent int) {
 	if currentCol(b)+inlineLen(items) <= lineLimit && !hasSubquery(items) {
 		writeInline(b, items)
 		return
@@ -178,11 +239,11 @@ func itemTail(it item) string {
 // pTop walks the token tree at top level and emits formatted SQL.
 // Items at the top level are: comments and statements (ending in ';').
 // Blank lines between statements are preserved.
-func pTop(b *bytes.Buffer, items []item) {
+func pTop(b *outBuf, items []item) {
 	i := 0
 	first := true
 	txnActive := false
-	for i < len(items) {
+	for i < len(items) && b.err == nil {
 		nextTxnControl := startsWithTxnControl(items, i)
 		if !first && items[i].blanksBefore() >= 2 && !(txnActive || nextTxnControl) {
 			b.WriteByte('\n')
@@ -218,21 +279,38 @@ func pTop(b *bytes.Buffer, items []item) {
 // pStmt prints a clause-based SQL statement at the given base indent.
 // All statement kinds (SELECT/INSERT/UPDATE/DELETE/WITH) flow through
 // splitClauses + emitClause; unrecognized starts fall back to inline.
-func pStmt(b *bytes.Buffer, items []item, base int) {
+func pStmt(b *outBuf, items []item, base int) {
+	if b.err != nil {
+		return
+	}
 	for _, c := range splitClauses(items) {
+		if b.err != nil {
+			return
+		}
 		emitClause(b, c, base)
 	}
 }
 
-func writeIndent(b *bytes.Buffer, n int) {
+func writeIndent(b *outBuf, n int) {
+	if b.err != nil {
+		return
+	}
+	if n > maxIndent {
+		b.err = errIndentLimit
+		return
+	}
+	if b.buf.Len()+n > b.limit {
+		b.err = errOutputLimit
+		return
+	}
 	for range n {
-		b.WriteByte(' ')
+		b.buf.WriteByte(' ')
 	}
 }
 
 // writeTerminator turns the buffer's trailing newline into "<end>\n" so
 // ";" hugs the previous line. O(1) via bytes.Buffer.Truncate.
-func writeTerminator(b *bytes.Buffer, end string) {
+func writeTerminator(b *outBuf, end string) {
 	if end == "" {
 		return
 	}
@@ -245,7 +323,7 @@ func writeTerminator(b *bytes.Buffer, end string) {
 
 // currentCol returns the column position of the cursor (bytes since the
 // last newline).
-func currentCol(b *bytes.Buffer) int {
+func currentCol(b *outBuf) int {
 	bs := b.Bytes()
 	idx := bytes.LastIndexByte(bs, '\n')
 	if idx < 0 {
@@ -257,7 +335,7 @@ func currentCol(b *bytes.Buffer) int {
 // ----------------------------------------------------------------------
 // Per-clause emit.
 
-func emitClause(b *bytes.Buffer, c clause, base int) {
+func emitClause(b *outBuf, c clause, base int) {
 	switch c.keyword {
 	case "SELECT":
 		writeIndent(b, base)
@@ -393,7 +471,7 @@ func emitClause(b *bytes.Buffer, c clause, base int) {
 // opening paren on its own line, the sub-statement indented, and the closing
 // paren back at base, with any trailing items (e.g. a FROM alias) inline
 // after it. body[0] must be a pkSubquery group.
-func emitParenSubqueryOperand(b *bytes.Buffer, body []item, base int) {
+func emitParenSubqueryOperand(b *outBuf, body []item, base int) {
 	writeIndent(b, base)
 	b.WriteString("(\n")
 	pStmt(b, body[0].grp.items, base+2)
@@ -410,9 +488,12 @@ func emitParenSubqueryOperand(b *bytes.Buffer, body []item, base int) {
 // List and expression emit.
 
 // emitCommaList emits items split on top-level commas, one per line.
-func emitCommaList(b *bytes.Buffer, items []item, indent int) {
+func emitCommaList(b *outBuf, items []item, indent int) {
 	parts := splitTopComma(items)
 	for i, p := range parts {
+		if b.err != nil {
+			return
+		}
 		writeIndent(b, indent)
 		emitExpr(b, p, indent)
 		if i < len(parts)-1 {
@@ -442,7 +523,10 @@ func splitTopComma(items []item) [][]item {
 
 // emitExpr emits a single expression at the given indent. Handles nested
 // groups (functions, predicate groups, subqueries) and CASE.
-func emitExpr(b *bytes.Buffer, items []item, indent int) {
+func emitExpr(b *outBuf, items []item, indent int) {
+	if b.err != nil {
+		return
+	}
 	for len(items) > 0 && items[0].isComment() {
 		b.WriteString(items[0].tok.val)
 		b.WriteByte('\n')
@@ -571,7 +655,7 @@ func findCaseEnd(items []item) (start, end int) {
 }
 
 // emitWrapped emits items inline with selective group expansion.
-func emitWrapped(b *bytes.Buffer, items []item, indent int) {
+func emitWrapped(b *outBuf, items []item, indent int) {
 	for i := range items {
 		if i > 0 && needSpace(items[i-1], items[i]) {
 			b.WriteByte(' ')
@@ -587,7 +671,7 @@ func emitWrapped(b *bytes.Buffer, items []item, indent int) {
 }
 
 // emitGroup decides inline vs wrapped based on length and group kind.
-func emitGroup(b *bytes.Buffer, g *group, indent int) {
+func emitGroup(b *outBuf, g *group, indent int) {
 	// Subqueries always wrap; the goldens never inline a SELECT inside parens.
 	if g.kind == pkSubquery {
 		emitSubqueryWrapped(b, g, indent)
@@ -615,7 +699,7 @@ func emitGroup(b *bytes.Buffer, g *group, indent int) {
 
 // emitFuncWrapped wraps a function call across multiple lines, optionally
 // in paired form (two args per line) for paired-args functions.
-func emitFuncWrapped(b *bytes.Buffer, g *group, indent int) {
+func emitFuncWrapped(b *outBuf, g *group, indent int) {
 	b.WriteString("(\n")
 	args := splitTopComma(g.items)
 	inner := indent + 2
@@ -648,7 +732,7 @@ func isWindowSpec(items []item) bool {
 	return indexTopKeywordSeq(items, "ORDER", "BY") >= 0
 }
 
-func emitWindowSpecWrapped(b *bytes.Buffer, items []item, indent int) {
+func emitWindowSpecWrapped(b *outBuf, items []item, indent int) {
 	orderIdx := indexTopKeywordSeq(items, "ORDER", "BY")
 	if orderIdx < 0 {
 		emitListWrapped(b, &group{items: items}, indent)
@@ -684,7 +768,7 @@ func emitWindowSpecWrapped(b *bytes.Buffer, items []item, indent int) {
 }
 
 // emitListWrapped wraps a comma-separated list (VALUES, IN, etc.).
-func emitListWrapped(b *bytes.Buffer, g *group, indent int) {
+func emitListWrapped(b *outBuf, g *group, indent int) {
 	b.WriteString("(\n")
 	parts := splitTopComma(g.items)
 	inner := indent + 2
@@ -702,7 +786,7 @@ func emitListWrapped(b *bytes.Buffer, g *group, indent int) {
 
 // emitPredWrapped wraps a parenthesized predicate group with AND/OR
 // continuations.
-func emitPredWrapped(b *bytes.Buffer, g *group, indent int) {
+func emitPredWrapped(b *outBuf, g *group, indent int) {
 	b.WriteString("(\n")
 	emitPredicateList(b, g.items, indent+2)
 	writeIndent(b, indent)
@@ -710,7 +794,7 @@ func emitPredWrapped(b *bytes.Buffer, g *group, indent int) {
 }
 
 // emitSubqueryWrapped emits a sub-statement.
-func emitSubqueryWrapped(b *bytes.Buffer, g *group, indent int) {
+func emitSubqueryWrapped(b *outBuf, g *group, indent int) {
 	b.WriteString("(\n")
 	pStmt(b, g.items, indent+2)
 	writeIndent(b, indent)
@@ -720,7 +804,7 @@ func emitSubqueryWrapped(b *bytes.Buffer, g *group, indent int) {
 // emitPredicateList emits predicates split on top-level AND/OR.
 // A parenthesized predicate child always force-wraps for visual
 // consistency with its siblings.
-func emitPredicateList(b *bytes.Buffer, items []item, indent int) {
+func emitPredicateList(b *outBuf, items []item, indent int) {
 	parts := splitPredicates(items)
 	for i, p := range parts {
 		writeIndent(b, indent)
@@ -760,7 +844,7 @@ func splitPredicates(items []item) []predPart {
 // ----------------------------------------------------------------------
 // FROM clause and JOINs.
 
-func emitFromClause(b *bytes.Buffer, c clause, base int) {
+func emitFromClause(b *outBuf, c clause, base int) {
 	parts := splitFromJoins(c.body)
 	// FROM (SELECT ...) alias: open paren ends FROM line, body at base+2,
 	// closer at base, alias trails.
@@ -808,7 +892,7 @@ func joinOnIndex(items []item) int {
 	return -1
 }
 
-func emitJoinPart(b *bytes.Buffer, items []item, onIdx, indent int) {
+func emitJoinPart(b *outBuf, items []item, onIdx, indent int) {
 	head := items[:onIdx]
 	pred := items[onIdx+1:]
 
@@ -899,7 +983,7 @@ func isJoinAhead(items []item, i int) bool {
 // INSERT, ON CONFLICT, VALUES, WITH.
 
 // emitOnConflict handles ON CONFLICT [(cols)] DO {NOTHING | UPDATE SET ...}.
-func emitOnConflict(b *bytes.Buffer, c clause, base int) {
+func emitOnConflict(b *outBuf, c clause, base int) {
 	writeIndent(b, base)
 	b.WriteString("ON CONFLICT")
 	body := c.body
@@ -971,7 +1055,7 @@ func emitOnConflict(b *bytes.Buffer, c clause, base int) {
 
 // emitInsertInto handles INSERT INTO <table> [(col list)]. Column list
 // wraps when 2+ columns; single-column stays inline.
-func emitInsertInto(b *bytes.Buffer, c clause, base int) {
+func emitInsertInto(b *outBuf, c clause, base int) {
 	writeIndent(b, base)
 	b.WriteString("INSERT INTO ")
 	body := c.body
@@ -1021,7 +1105,7 @@ func emitInsertInto(b *bytes.Buffer, c clause, base int) {
 // The target and the source each take a line under their keyword, as
 // in DELETE FROM ... USING. The join condition continues under the
 // source, as ON does under a JOIN.
-func emitMergeInto(b *bytes.Buffer, c clause, base int) {
+func emitMergeInto(b *outBuf, c clause, base int) {
 	target := c.body
 	source := []item(nil)
 	if usingIdx := indexTopKeyword(c.body, "USING"); usingIdx >= 0 {
@@ -1051,7 +1135,7 @@ func emitMergeInto(b *bytes.Buffer, c clause, base int) {
 // <action>. The head and its condition share a line that ends in THEN,
 // and the action sits under it, as a CASE branch does. A condition
 // that does not fit continues at the action's indent.
-func emitMergeWhen(b *bytes.Buffer, c clause, base int) {
+func emitMergeWhen(b *outBuf, c clause, base int) {
 	writeIndent(b, base)
 	b.WriteString(strings.ToUpper(inline(c.head)))
 	thenIdx := nextCaseToken(c.body, 0, "THEN")
@@ -1075,7 +1159,7 @@ func emitMergeWhen(b *bytes.Buffer, c clause, base int) {
 // emitMergeAction prints one MERGE action. UPDATE SET and INSERT wrap
 // their lists one per line, as the statements of the same name do.
 // DELETE and DO NOTHING are one line.
-func emitMergeAction(b *bytes.Buffer, action []item, indent int) {
+func emitMergeAction(b *outBuf, action []item, indent int) {
 	switch {
 	case len(action) >= 2 && action[0].isKW("UPDATE") && action[1].isKW("SET"):
 		writeIndent(b, indent)
@@ -1093,7 +1177,7 @@ func emitMergeAction(b *bytes.Buffer, action []item, indent int) {
 // emitMergeInsert handles INSERT [(cols)] VALUES (vals) inside a MERGE.
 // The column list and the value list each open on their keyword's
 // line, and a one-element list stays inline, as in INSERT INTO.
-func emitMergeInsert(b *bytes.Buffer, action []item, indent int) {
+func emitMergeInsert(b *outBuf, action []item, indent int) {
 	writeIndent(b, indent)
 	b.WriteString("INSERT")
 	rest := action[1:]
@@ -1131,7 +1215,7 @@ func emitMergeInsert(b *bytes.Buffer, action []item, indent int) {
 
 // emitMergeList prints a parenthesized list: inline when it holds one
 // element, one per line otherwise.
-func emitMergeList(b *bytes.Buffer, g *group, indent int) {
+func emitMergeList(b *outBuf, g *group, indent int) {
 	if len(splitTopComma(g.items)) == 1 {
 		b.WriteByte('(')
 		writeInline(b, g.items)
@@ -1144,7 +1228,7 @@ func emitMergeList(b *bytes.Buffer, g *group, indent int) {
 // emitValues handles VALUES (tuple1), (tuple2), ...
 // Single-tuple, single-arg case indents VALUES +2 from base; otherwise
 // VALUES sits at column 0 with each tuple wrapped one-per-line.
-func emitValues(b *bytes.Buffer, c clause, base int) {
+func emitValues(b *outBuf, c clause, base int) {
 	parts := splitTopComma(c.body)
 	if len(parts) == 1 && len(parts[0]) == 1 && parts[0][0].grp != nil {
 		g := parts[0][0].grp
@@ -1178,7 +1262,7 @@ func emitValues(b *bytes.Buffer, c clause, base int) {
 
 // emitWith handles WITH [RECURSIVE] name AS [[NOT] MATERIALIZED] (subquery)
 // [, name2 AS (subquery)] <body>.
-func emitWith(b *bytes.Buffer, c clause, base int) {
+func emitWith(b *outBuf, c clause, base int) {
 	writeIndent(b, base)
 	b.WriteString("WITH")
 	body := c.body
@@ -1283,7 +1367,10 @@ func materializedModifier(items []item) (string, []item) {
 //	  END
 //
 // `indent` is the column where the line containing CASE starts.
-func emitCase(b *bytes.Buffer, items []item, indent int) {
+func emitCase(b *outBuf, items []item, indent int) {
+	if b.err != nil {
+		return
+	}
 	whenIndent := indent + 2
 	valueIndent := indent + 4
 	i, n := 1, len(items)
@@ -1358,7 +1445,7 @@ func nextCaseToken(items []item, i int, stops ...string) int {
 // emitWhenCondition emits a CASE WHEN condition. Short conditions inline;
 // long ones (AND/OR chain, NOT EXISTS subquery) wrap with continuations at
 // the value column. Subqueries in the condition always force wrap.
-func emitWhenCondition(b *bytes.Buffer, items []item, whenIndent, valueIndent int) {
+func emitWhenCondition(b *outBuf, items []item, whenIndent, valueIndent int) {
 	if currentCol(b)+inlineLen(items) <= lineLimit && !hasSubquery(items) {
 		writeInline(b, items)
 		return
