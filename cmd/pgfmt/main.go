@@ -51,41 +51,87 @@ func main() {
 
 	status := 0
 	for _, path := range args {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "pgfmt:", err)
-			status = 2
-			continue
+		code := formatFile(path, *check, *write)
+		if code > status {
+			status = code
 		}
-		out, err := pgfmt.Format(string(src))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pgfmt: %s: %v\n", path, err)
-			status = 2
-			continue
-		}
-		// Without a flag, stdout is the output, so a file already in the
-		// style prints as it is: `pgfmt in.sql > out.sql` must never
-		// leave out.sql empty. Only -c and -w have nothing to do for it.
-		if !*check && !*write {
-			io.WriteString(os.Stdout, out)
-			continue
-		}
-		if out == string(src) {
-			continue
-		}
-		if *check {
-			fmt.Fprintf(os.Stderr, "FAIL: %s needs formatting. Run: pgfmt -w %s\n", path, path)
-			if status < 1 {
-				status = 1
-			}
-			continue
-		}
-		if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "pgfmt:", err)
-			status = 2
-			continue
-		}
-		fmt.Printf("Formatted %s\n", path)
 	}
 	os.Exit(status)
+}
+
+func formatFile(path string, check, write bool) int {
+	f, info, err := openRegular(path, os.O_RDONLY)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "pgfmt:", err)
+		return 2
+	}
+	defer f.Close()
+
+	src, err := readBounded(f, info, path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "pgfmt:", err)
+		return 2
+	}
+	out, err := pgfmt.Format(string(src))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pgfmt: %s: %v\n", path, err)
+		return 2
+	}
+	// Without a flag, stdout is the output, so a file already in the
+	// style prints as it is: `pgfmt in.sql > out.sql` must never
+	// leave out.sql empty. Only -c and -w have nothing to do for it.
+	if !check && !write {
+		io.WriteString(os.Stdout, out)
+		return 0
+	}
+	if out == string(src) {
+		return 0
+	}
+	if check {
+		fmt.Fprintf(os.Stderr, "FAIL: %s needs formatting. Run: pgfmt -w %s\n", path, path)
+		return 1
+	}
+	if err := writeSameRegular(path, info, out); err != nil {
+		fmt.Fprintln(os.Stderr, "pgfmt:", err)
+		return 2
+	}
+	fmt.Printf("Formatted %s\n", path)
+	return 0
+}
+
+func readBounded(f *os.File, info os.FileInfo, path string) ([]byte, error) {
+	size := info.Size()
+	if size < 0 {
+		return nil, fmt.Errorf("%s: invalid file size", path)
+	}
+	src, err := io.ReadAll(io.LimitReader(f, size+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(src)) > size {
+		return nil, fmt.Errorf("%s: file grew while reading", path)
+	}
+	return src, nil
+}
+
+// writeSameRegular rewrites path only if it still refers to the same
+// regular file as readInfo, without following a symbolic link.
+func writeSameRegular(path string, readInfo os.FileInfo, out string) error {
+	wf, winfo, err := openRegular(path, os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(readInfo, winfo) {
+		wf.Close()
+		return fmt.Errorf("%s: file changed before write", path)
+	}
+	if err := wf.Truncate(0); err != nil {
+		wf.Close()
+		return err
+	}
+	if _, err := io.WriteString(wf, out); err != nil {
+		wf.Close()
+		return err
+	}
+	return wf.Close()
 }
