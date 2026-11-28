@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -189,6 +190,57 @@ func TestWriteFormatsRegularFile(t *testing.T) {
 	is.NoErr(exec.Command(bin, "-w", path).Run())
 
 	got, err := os.ReadFile(path)
+	is.NoErr(err)
+	is.Eq(string(got), "SELECT\n  1;\n")
+}
+
+// TestRefusesSymlinkedParentDirectory checks that pgfmt refuses a path
+// inside the working directory whose parent directory is a symbolic
+// link pointing outside the tree, in stdout, -c, and -w modes.
+func TestRefusesSymlinkedParentDirectory(t *testing.T) {
+	is := is.New(t)
+	bin := filepath.Join(t.TempDir(), "pgfmt")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	out, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	const input = "select 1;\n"
+	outside := t.TempDir()
+	target := filepath.Join(outside, "outside.sql")
+	is.NoErr(os.WriteFile(target, []byte(input), 0o644))
+
+	tree := t.TempDir()
+	is.NoErr(os.Symlink(outside, filepath.Join(tree, "linked")))
+	localFile := filepath.Join(tree, "local.sql")
+	is.NoErr(os.WriteFile(localFile, []byte(input), 0o644))
+
+	paths := []string{
+		filepath.Join("linked", "outside.sql"),
+		filepath.Join(tree, "linked", "outside.sql"),
+	}
+	for _, p := range paths {
+		for _, args := range [][]string{{p}, {"-c", p}, {"-w", p}} {
+			cmd := exec.Command(bin, args...)
+			cmd.Dir = tree
+			stdout, err := cmd.Output()
+			var exitErr *exec.ExitError
+			is.True(errors.As(err, &exitErr))
+			is.Eq(exitErr.ExitCode(), 2)
+			is.Eq(string(stdout), "")
+		}
+	}
+
+	got, err := os.ReadFile(target)
+	is.NoErr(err)
+	is.Eq(string(got), input)
+
+	// A regular file inside the tree still formats.
+	cmd := exec.Command(bin, "-w", "local.sql")
+	cmd.Dir = tree
+	is.NoErr(cmd.Run())
+	got, err = os.ReadFile(localFile)
 	is.NoErr(err)
 	is.Eq(string(got), "SELECT\n  1;\n")
 }

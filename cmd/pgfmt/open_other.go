@@ -7,9 +7,14 @@ import (
 	"os"
 )
 
-// openRegular verifies via Lstat that path is a regular file, opens it,
-// and confirms that the open handle refers to the same regular file.
-func openRegular(path string, flag int) (*os.File, os.FileInfo, error) {
+func openRegularFlags(flag int) int {
+	return flag
+}
+
+// openRegularDirect verifies via Lstat that path is a regular file,
+// opens it, and confirms that the open handle refers to the same
+// regular file.
+func openRegularDirect(path string, flag int) (*os.File, os.FileInfo, error) {
 	linfo, err := os.Lstat(path)
 	if err != nil {
 		return nil, nil, err

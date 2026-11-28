@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/croaky/pgfmt"
 )
@@ -134,4 +135,92 @@ func writeSameRegular(path string, readInfo os.FileInfo, out string) error {
 		return err
 	}
 	return wf.Close()
+}
+
+// openRegular opens path as a regular file without following a trailing
+// symbolic link. When path lies inside the working directory, it opens
+// through os.Root so no symlinked parent directory can escape the tree.
+func openRegular(path string, flag int) (*os.File, os.FileInfo, error) {
+	if rootDir, rel, ok := treeRelative(path); ok {
+		return openRegularInRoot(rootDir, rel, path, flag)
+	}
+	return openRegularDirect(path, flag)
+}
+
+// treeRelative reports whether path lies inside the current working
+// directory and returns the root directory and relative path.
+func treeRelative(path string) (rootDir, rel string, ok bool) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		if filepath.IsLocal(clean) {
+			return ".", clean, true
+		}
+		return "", "", false
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", false
+	}
+	if r, err := filepath.Rel(cwd, clean); err == nil && filepath.IsLocal(r) {
+		return cwd, r, true
+	}
+	cwdInfo, err := os.Stat(cwd)
+	if err != nil {
+		return "", "", false
+	}
+	// Match the shortest ancestor of clean that refers to cwd so system
+	// symlinks above cwd (such as /var -> /private/var on macOS) still
+	// confine the remainder of the path to cwd.
+	matched := ""
+	for dir := filepath.Dir(clean); ; {
+		if info, err := os.Stat(dir); err == nil && os.SameFile(cwdInfo, info) {
+			matched = dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if matched == "" {
+		return "", "", false
+	}
+	r, err := filepath.Rel(matched, clean)
+	if err != nil || !filepath.IsLocal(r) {
+		return "", "", false
+	}
+	return cwd, r, true
+}
+
+// openRegularInRoot opens rel inside rootDir through os.Root so no
+// parent directory symbolic link can escape rootDir, refuses a trailing
+// symbolic link, and verifies that the open file is regular.
+func openRegularInRoot(rootDir, rel, path string, flag int) (*os.File, os.FileInfo, error) {
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer root.Close()
+
+	linfo, err := root.Lstat(rel)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !linfo.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	f, err := root.OpenFile(rel, openRegularFlags(flag), 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(linfo, info) {
+		f.Close()
+		return nil, nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	return f, info, nil
 }

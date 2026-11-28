@@ -8,11 +8,15 @@ import (
 	"syscall"
 )
 
-// openRegular opens path without following a trailing symbolic link and
-// without blocking on a FIFO, then verifies that the open file is a
-// regular file.
-func openRegular(path string, flag int) (*os.File, os.FileInfo, error) {
-	f, err := os.OpenFile(path, flag|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+func openRegularFlags(flag int) int {
+	return flag | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+}
+
+// openRegularDirect opens path without following a trailing symbolic
+// link and without blocking on a FIFO, then verifies that the open file
+// is a regular file.
+func openRegularDirect(path string, flag int) (*os.File, os.FileInfo, error) {
+	f, err := os.OpenFile(path, openRegularFlags(flag), 0)
 	if err != nil {
 		return nil, nil, err
 	}
