@@ -1629,6 +1629,62 @@ func TestFormatOutputAndIndentLimits(t *testing.T) {
 	})
 }
 
+// TestFormatOutputLimitRunTime checks that Format finishes in linear
+// time after outBuf latches errOutputLimit on a long line followed by
+// many paren groups or CASE branches.
+func TestFormatOutputLimitRunTime(t *testing.T) {
+	// Nested parens at depth 95 write 192 spaces of indent per comma
+	// element (about 194 bytes per comma). A prefix of commas consumes
+	// almost the whole 16x output budget, so the long inline run that
+	// follows latches errOutputLimit with a long frozen last line.
+	const depth = 95
+	openP := strings.Repeat("(", depth)
+	closeP := strings.Repeat(")", depth)
+
+	cases := []struct {
+		name  string
+		build func(n int) string
+	}{
+		{
+			name: "paren groups after long inline run",
+			build: func(n int) string {
+				commas := (126*n - 15040) / 178
+				return "select " + openP + strings.Repeat(",", commas) + closeP + ", " +
+					strings.Repeat("x ", 2*n) + strings.Repeat(" (1)", n) + ";"
+			},
+		},
+		{
+			name: "CASE branches after long inline run",
+			build: func(n int) string {
+				commas := (286*n - 14880) / 178
+				return "select " + openP + strings.Repeat(",", commas) + closeP + ", case " +
+					strings.Repeat("x ", 2*n) + strings.Repeat(" when 1 then 2", n) + " end;"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			run := func(n int) time.Duration {
+				src := tc.build(n)
+				best := time.Duration(math.MaxInt64)
+				for range 3 {
+					start := time.Now()
+					_, err := Format(src)
+					best = min(best, time.Since(start))
+					is.HasErr(err)
+				}
+				return best
+			}
+			small, large := run(2000), run(16000)
+			if large > 24*small {
+				t.Fatalf("Format took %v at n=16000 and %v at n=2000: more than linear", large, small)
+			}
+		})
+	}
+}
+
 // benchFile is a migration of the kind pgfmt formats: header comments,
 // DDL, a CTE, joins, CASE, a long function call that wraps, an upsert,
 // a MERGE, and a PL/pgSQL body in a dollar quote. It also holds the

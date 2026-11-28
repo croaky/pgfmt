@@ -37,6 +37,7 @@ var (
 type outBuf struct {
 	buf   bytes.Buffer
 	limit int
+	col   int
 	err   error
 }
 
@@ -48,7 +49,15 @@ func (b *outBuf) WriteByte(c byte) error {
 		b.err = errOutputLimit
 		return b.err
 	}
-	return b.buf.WriteByte(c)
+	if err := b.buf.WriteByte(c); err != nil {
+		return err
+	}
+	if c == '\n' {
+		b.col = 0
+	} else {
+		b.col++
+	}
+	return nil
 }
 
 func (b *outBuf) WriteString(s string) (int, error) {
@@ -59,15 +68,33 @@ func (b *outBuf) WriteString(s string) (int, error) {
 		b.err = errOutputLimit
 		return 0, b.err
 	}
-	return b.buf.WriteString(s)
+	n, err := b.buf.WriteString(s)
+	if idx := strings.LastIndexByte(s[:n], '\n'); idx >= 0 {
+		b.col = n - idx - 1
+	} else {
+		b.col += n
+	}
+	return n, err
 }
 
 func (b *outBuf) Bytes() []byte  { return b.buf.Bytes() }
 func (b *outBuf) Len() int       { return b.buf.Len() }
 func (b *outBuf) String() string { return b.buf.String() }
 func (b *outBuf) Truncate(n int) {
-	if b.err == nil {
-		b.buf.Truncate(n)
+	if b.err != nil {
+		return
+	}
+	removed := b.buf.Len() - n
+	b.buf.Truncate(n)
+	if removed <= b.col {
+		b.col -= removed
+		return
+	}
+	bs := b.buf.Bytes()
+	if idx := bytes.LastIndexByte(bs, '\n'); idx >= 0 {
+		b.col = len(bs) - idx - 1
+	} else {
+		b.col = len(bs)
 	}
 }
 
@@ -180,6 +207,9 @@ func isTxnControlKeyword(v string) bool {
 }
 
 func emitCaseValue(b *outBuf, items []item, indent int) {
+	if b.err != nil {
+		return
+	}
 	if currentCol(b)+inlineLen(items) <= lineLimit && !hasSubquery(items) {
 		writeInline(b, items)
 		return
@@ -306,6 +336,7 @@ func writeIndent(b *outBuf, n int) {
 	for range n {
 		b.buf.WriteByte(' ')
 	}
+	b.col += n
 }
 
 // writeTerminator turns the buffer's trailing newline into "<end>\n" so
@@ -324,12 +355,7 @@ func writeTerminator(b *outBuf, end string) {
 // currentCol returns the column position of the cursor (bytes since the
 // last newline).
 func currentCol(b *outBuf) int {
-	bs := b.Bytes()
-	idx := bytes.LastIndexByte(bs, '\n')
-	if idx < 0 {
-		return len(bs)
-	}
-	return len(bs) - idx - 1
+	return b.col
 }
 
 // ----------------------------------------------------------------------
@@ -657,6 +683,9 @@ func findCaseEnd(items []item) (start, end int) {
 // emitWrapped emits items inline with selective group expansion.
 func emitWrapped(b *outBuf, items []item, indent int) {
 	for i := range items {
+		if b.err != nil {
+			return
+		}
 		if i > 0 && needSpace(items[i-1], items[i]) {
 			b.WriteByte(' ')
 		}
@@ -672,6 +701,9 @@ func emitWrapped(b *outBuf, items []item, indent int) {
 
 // emitGroup decides inline vs wrapped based on length and group kind.
 func emitGroup(b *outBuf, g *group, indent int) {
+	if b.err != nil {
+		return
+	}
 	// Subqueries always wrap; the goldens never inline a SELECT inside parens.
 	if g.kind == pkSubquery {
 		emitSubqueryWrapped(b, g, indent)
@@ -704,7 +736,7 @@ func emitFuncWrapped(b *outBuf, g *group, indent int) {
 	args := splitTopComma(g.items)
 	inner := indent + 2
 	if pairedFns[g.fn] && len(args)%2 == 0 && len(args) >= 4 {
-		for i := 0; i < len(args); i += 2 {
+		for i := 0; i < len(args) && b.err == nil; i += 2 {
 			writeIndent(b, inner)
 			emitExpr(b, args[i], inner)
 			b.WriteString(", ")
@@ -716,6 +748,9 @@ func emitFuncWrapped(b *outBuf, g *group, indent int) {
 		}
 	} else {
 		for i, a := range args {
+			if b.err != nil {
+				return
+			}
 			writeIndent(b, inner)
 			emitExpr(b, a, inner)
 			if i < len(args)-1 {
@@ -755,6 +790,9 @@ func emitWindowSpecWrapped(b *outBuf, items []item, indent int) {
 	orderItems := items[orderIdx+2:]
 	parts := splitTopComma(orderItems)
 	for i, p := range parts {
+		if b.err != nil {
+			return
+		}
 		writeIndent(b, inner+2)
 		emitExpr(b, p, inner+2)
 		if i < len(parts)-1 {
@@ -773,6 +811,9 @@ func emitListWrapped(b *outBuf, g *group, indent int) {
 	parts := splitTopComma(g.items)
 	inner := indent + 2
 	for i, p := range parts {
+		if b.err != nil {
+			return
+		}
 		writeIndent(b, inner)
 		emitExpr(b, p, inner)
 		if i < len(parts)-1 {
@@ -1382,7 +1423,7 @@ func emitCase(b *outBuf, items []item, indent int) {
 		writeInline(b, items[opStart:i])
 	}
 	b.WriteByte('\n')
-	for i < n {
+	for i < n && b.err == nil {
 		switch {
 		case items[i].isKW("WHEN"):
 			i++
@@ -1446,6 +1487,9 @@ func nextCaseToken(items []item, i int, stops ...string) int {
 // long ones (AND/OR chain, NOT EXISTS subquery) wrap with continuations at
 // the value column. Subqueries in the condition always force wrap.
 func emitWhenCondition(b *outBuf, items []item, whenIndent, valueIndent int) {
+	if b.err != nil {
+		return
+	}
 	if currentCol(b)+inlineLen(items) <= lineLimit && !hasSubquery(items) {
 		writeInline(b, items)
 		return
@@ -1457,6 +1501,9 @@ func emitWhenCondition(b *outBuf, items []item, whenIndent, valueIndent int) {
 	}
 	emitExpr(b, parts[0].body, whenIndent)
 	for _, p := range parts[1:] {
+		if b.err != nil {
+			return
+		}
 		b.WriteByte('\n')
 		writeIndent(b, valueIndent)
 		b.WriteString(p.conn)
